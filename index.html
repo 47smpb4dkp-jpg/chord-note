@@ -540,11 +540,49 @@ function dispWidth(s){ let w=0; for(const ch of s) w+=charWidth(ch); return w; }
 function normTok(t){
   let s = t.normalize('NFKC');
   s = s.replace(/♭/g,'b').replace(/♯/g,'#').replace(/♮/g,'');
+  s = s.replace(/[\u2212\u2013\u2014]/g,'-');   // 各種のマイナス記号
+  s = s.replace(/[△Δ]/g,'M');                   // △ Δ はメジャーセブンス
   s = s.replace(/[【】\[\]]/g,'');
   return s.trim();
 }
 
-const CHORD_RE = /^[A-G][#b]?(m|M|maj|min|dim|aug|\+)?(2|4|5|6|7|9|11|13)?(sus(2|4)?)?(add(2|4|9|11|13))?(b5|#5|b9|#9|#11|b13)?(\/[A-G][#b]?)?$/;
+// コード名の後ろに付きうる部分。長いものから順に消費して判定する
+const CHORD_SUFFIX = [
+  // マイナーメジャー系（mM7 など）は m より先に見る必要がある
+  'minmaj7','minMaj7','mmaj7','mMaj7','mMAJ7','mM7','mM9','mM',
+  'maj13','maj11','maj9','maj7','Maj13','Maj11','Maj9','Maj7','MAJ7',
+  'M13','M11','M9','M7','MA7',
+  'min13','min11','min9','min7','min6','min',
+  'm13','m11','m9','m7','m6','m',
+  'dim7','dim','°7','°','aug','ø7','ø','hdim',
+  'sus4','sus2','sus',
+  'add13','add11','add9','add4','add2',
+  'omit3','omit5','no3','no5','alt',
+  '6/9','69','13','11','9','7','6','5','4','3','2',
+  'b13','-13','#11','+11','b11','b9','-9','#9','+9','b5','-5','#5','+5',
+  'maj','Maj','MAJ','M','+','-',
+  '(',')',' '
+].sort((a,b)=>b.length - a.length);
+
+// コード名として読めるか
+function isChordName(s){
+  if (!s) return false;
+  const m = /^([A-G][#b]?)(.*)$/.exec(s);
+  if (!m) return false;
+  let rest = m[2];
+  // 分数コードのベース音を先に外す
+  const sl = /\/([A-G][#b]?)$/.exec(rest);
+  if (sl) rest = rest.slice(0, rest.length - sl[0].length);
+  let guard = 0;
+  while (rest && guard++ < 16){
+    const hit = CHORD_SUFFIX.find(p=>rest.startsWith(p));
+    if (!hit) return false;
+    rest = rest.slice(hit.length);
+  }
+  return !rest;
+}
+// 既存の呼び出しと形を合わせる
+const CHORD_RE = {test: isChordName};
 const SECTIONS = ['イントロ','前奏','間奏','アウトロ','エンディング','サビ','リフレイン',
   'Aメロ','Bメロ','Cメロ','ソロ','ブレイク','Break','Intro','Outro','Solo','Coda','Fine'];
 
@@ -861,12 +899,13 @@ const SHAPES = {
 };
 // 可動フォーム: 6弦ルート(E型) / 5弦ルート(A型)。開放形を基準に、ルート位置ぶん平行移動する
 const EFORM = {'':[0,2,2,1,0,0],'m':[0,2,2,0,0,0],'7':[0,2,0,1,0,0],'m7':[0,2,0,0,0,0],
+  'mM7':[0,2,1,0,0,0],'m7b5':[0,1,2,0,3,0],'dim':[0,1,2,0,2,0],
   'maj7':[0,2,1,1,0,0],'6':[0,2,2,1,2,0],'m6':[0,2,2,0,2,0],'sus4':[0,2,2,2,0,0],
   'sus2':[0,2,4,4,0,0],'add9':[0,2,4,1,0,0],'9':[0,2,0,1,0,2],'aug':[0,3,2,1,1,0]};
 const AFORM = {'':[-1,0,2,2,2,0],'m':[-1,0,2,2,1,0],'7':[-1,0,2,0,2,0],'m7':[-1,0,2,0,1,0],
   'maj7':[-1,0,2,1,2,0],'6':[-1,0,2,2,2,2],'m6':[-1,0,2,2,1,2],'sus4':[-1,0,2,2,3,0],
   'sus2':[-1,0,2,2,0,0],'add9':[-1,0,2,4,2,0],'9':[-1,0,2,4,2,3],'aug':[-1,0,3,2,2,1],
-  'm7b5':[-1,0,1,2,1,3],'dim':[-1,0,1,2,1,2]};
+  'm7b5':[-1,0,1,2,1,3],'dim':[-1,0,1,2,1,2],'mM7':[-1,0,2,1,1,0]};
 
 const QUALITIES = [
   {q:'',     label:'メジャー', ex:'C'},
@@ -881,6 +920,7 @@ const QUALITIES = [
   {q:'add9', label:'アドナイン', ex:'Cadd9'},
   {q:'9',    label:'ナインス', ex:'C9'},
   {q:'m7b5', label:'マイナーセブンフラットファイブ', ex:'Cm7-5'},
+  {q:'mM7',  label:'マイナーメジャーセブンス', ex:'CmM7'},
   {q:'dim',  label:'ディミニッシュ', ex:'Cdim'},
   {q:'aug',  label:'オーギュメント', ex:'Caug'},
 ];
@@ -932,16 +972,25 @@ function buildShapes(root, qual){
 
 // コード名を ルート + 種類 に分解する
 function splitChord(name){
-  const base = name.replace(/\/.*$/,'');
+  // ♭ ♯ △ などの記号をここでも揃え、分数コードのベース音を外してから分解する
+  const base = normTok(String(name||''))
+    .replace(/\/.*$/, '')
+    .replace(/[(（]?\s*(?:on|ON|On|oN|オン)\s*[A-G][#b]?\s*[)）]?$/, '');
   const m = base.match(/^([A-G][#b]?)(.*)$/);
   if (!m) return null;
-  let q = m[2];
-  if (q === 'M7' || q === 'maj7' || q === 'Maj7') q = 'maj7';
-  if (q === 'min7') q = 'm7';
-  if (q === 'min') q = 'm';
-  if (q === 'm7-5' || q === 'm7b5') q = 'm7b5';
-  if (q === 'dim7') q = 'dim';
-  if (q === '+') q = 'aug';
+  let q = (m[2] || '').replace(/[()（） ]/g, '');
+  const MAP = {
+    'M7':'maj7','Maj7':'maj7','MAJ7':'maj7','MA7':'maj7','maj7':'maj7',
+    'M9':'maj7','maj9':'maj7','Maj9':'maj7',
+    'min7':'m7','min':'m','min6':'m6','min9':'m7',
+    'mM7':'mM7','mMaj7':'mM7','mmaj7':'mM7','minmaj7':'mM7','minMaj7':'mM7','mM':'mM7',
+    'm7-5':'m7b5','m7b5':'m7b5','mb5':'m7b5','ø':'m7b5','ø7':'m7b5','hdim':'m7b5',
+    'dim7':'dim','°':'dim','°7':'dim',
+    '+':'aug','+5':'aug','aug5':'aug',
+    'sus':'sus4','69':'6','6/9':'6',
+    'm11':'m7','m13':'m7','11':'9','13':'9','M11':'maj7','M13':'maj7'
+  };
+  if (MAP[q]) q = MAP[q];
   return {root: FLATEQ[m[1]] || m[1], qual: q};
 }
 
@@ -1372,7 +1421,7 @@ let playlists = [];          // [{id, name, songs:[songId]}]
 let openList = null;         // 開いているセットリストのID
 let listEdit = false;        // 並べ替え・編集モード
 let myChords = [];           // [{name, frets?}]
-const GENRES = ['オリジナル','フォーク','ロック','ポップス','バラード','弾き語り','歌謡曲','ジャズ','ブルース','洋楽'];
+const GENRES = ['オリジナル','フォーク','ロック','ポップス','バラード','弾き語り','ボカロ','歌謡曲','アニソング','ジャズ','ブルース','洋楽'];
 // 今使われているジャンル＋候補をまとめて返す
 function genreOptions(){
   const used = [...new Set(songs.map(x=>x.folder||'未分類'))].filter(x=>x && x!=='未分類');
