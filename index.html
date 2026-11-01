@@ -161,6 +161,20 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
 .brow.bad{opacity:.5}
 .brow.bad .bs{color:var(--fg-dim)}
 
+/* 読み取り結果の見出し */
+.prevhead{display:flex;flex-wrap:wrap;gap:9px 20px;padding:11px 13px;margin-bottom:14px;
+  background:var(--surface-2);border:1px solid var(--line);border-radius:9px}
+.ph{display:flex;flex-direction:column;gap:2px;min-width:0}
+.ph span{font-size:.66rem;letter-spacing:.06em;color:var(--fg-dim)}
+.ph b{font-size:.88rem;word-break:break-all}
+.ph i{font-style:normal;font-size:.62rem;color:var(--accent);background:var(--accent-soft);
+  padding:1px 6px;border-radius:4px;margin-left:6px}
+
+/* 曲画面ヘッダ */
+.hdr-row1{display:flex;align-items:center;gap:8px;flex:1 1 100%;min-width:0}
+.hdr-sub2{font-size:.72rem;color:var(--fg-dim);font-weight:400;margin-top:1px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
 /* 編集・選択 */
 .erow{display:grid;grid-template-columns:repeat(auto-fit,minmax(104px,1fr));gap:10px}
 .erow .field{margin-bottom:0}
@@ -541,20 +555,130 @@ function lineKind(line){
 }
 function isChordLine(line){ return lineKind(line) !== 'lyric'; }
 
+// コードの並びからキーを推測する
+function guessKey(blocks){
+  const count = {}, seq = [];
+  blocks.forEach(b=>b.chords.forEach(c=>{
+    if (c.kind !== 'c') return;
+    const m = c.text.match(/^([A-G][#b]?)(m(?!aj))?/);
+    if (!m) return;
+    const root = pc(m[1]);
+    if (root < 0) return;
+    const k = root + '|' + (m[2] ? 'm' : 'M');
+    count[k] = (count[k] || 0) + 1;
+    seq.push(k);
+  }));
+  const total = Object.values(count).reduce((a,b)=>a+b, 0);
+  if (total < 3) return null;
+  // 曲の最初と最後は主和音になりやすい
+  const edge = {};
+  if (seq.length){
+    edge[seq[0]] = (edge[seq[0]] || 0) + 2.5;
+    edge[seq[seq.length-1]] = (edge[seq[seq.length-1]] || 0) + 3.5;
+  }
+
+  // メジャーキーの I ii iii IV V vi / マイナーキーの i ii° III iv v VI VII
+  const MAJ = [[0,'M'],[2,'m'],[4,'m'],[5,'M'],[7,'M'],[9,'m'],[11,'m']];
+  const MIN = [[0,'m'],[3,'M'],[5,'m'],[7,'m'],[8,'M'],[10,'M'],[2,'m']];
+  // 主要な和音ほど重くみる
+  const W_MAJ = {0:3, 7:2.4, 5:2.2, 9:1.8, 2:1.2, 4:1.0, 11:0.8};
+  const W_MIN = {0:3, 7:2.2, 5:2.0, 8:1.8, 10:1.6, 3:1.4, 2:0.8};
+
+  let best = null;
+  for (let r = 0; r < 12; r++){
+    for (const [mode, set, W] of [['major', MAJ, W_MAJ], ['minor', MIN, W_MIN]]){
+      let score = 0;
+      for (const k in count){
+        const [pcs, q] = k.split('|');
+        const deg = ((+pcs - r) + 12) % 12;
+        const hit = set.find(d=>d[0] === deg && d[1] === q);
+        if (hit) score += count[k] * (W[deg] || 1);
+        else score -= count[k] * 0.45;      // キー外は減点
+      }
+      const tonic = r + '|' + (mode === 'minor' ? 'm' : 'M');
+      score += (edge[tonic] || 0);
+      if (!best || score > best.score) best = {score, root: SHARP[r], mode};
+    }
+  }
+  if (!best || best.score <= 0) return null;
+  return best;
+}
+
 function parseSheet(text){
-  const lines = text.replace(/\r\n/g,'\n').split('\n');
-  const out = {title:'', credit:'', key:null, capo:null, blocks:[]};
-  let i=0;
-  while(i<lines.length && !lines[i].trim()) i++;
-  if (i<lines.length && !isChordLine(lines[i])){ out.title = lines[i].trim(); i++; }
-  let cur=null;
-  for(; i<lines.length; i++){
+  let lines = text.replace(/\r\n/g,'\n').split('\n');
+  const out = {title:'', artist:'', credit:'', key:null, keyGuessed:false,
+               capo:null, bpm:null, transpose:0, folder:'', blocks:[]};
+
+  // --- 冒頭の --- で挟まれた情報欄を読み取り、本文からは外す ---
+  let i = 0;
+  while (i < lines.length && !lines[i].trim()) i++;
+  if (lines[i] !== undefined && lines[i].trim() === '---'){
+    let j = i + 1;
+    while (j < lines.length && lines[j].trim() !== '---') j++;
+    if (j < lines.length){
+      lines.slice(i + 1, j).forEach(L=>{
+        const m = L.match(/^\s*([A-Za-z_]+)\s*:\s*(.*)$/);
+        if (!m) return;
+        const k = m[1].toLowerCase(), v = m[2].trim();
+        if (k === 'title') out.title = v;
+        else if (k === 'artist') out.artist = v;
+        else if (k === 'key') out.key = normTok(v);
+        else if (k === 'capo') out.capo = parseInt(v, 10) || 0;
+        else if (k === 'bpm') out.bpm = parseInt(v, 10) || null;
+        else if (k === 'folder') out.folder = v;
+        else if (k === 'transpose') out.transpose = parseInt(v, 10) || 0;
+        else if (k === 'speed' && !out.bpm){
+          const sp = parseFloat(v);
+          if (sp > 0 && sp < 2) out.bpm = Math.round(sp * 480);   // 旧形式の目安
+        }
+      });
+      lines = lines.slice(j + 1);
+      i = 0;
+    }
+  }
+
+  // --- 1行目を曲名として拾う（コード行・キー行でなければ） ---
+  const looksLikeKeyLine = L =>
+    /Key\s*(?:on|=|:|：)?\s*[A-G]/i.test(L) || /Capo/i.test(L.normalize('NFKC'));
+  while (i < lines.length && !lines[i].trim()) i++;
+  if (i < lines.length && !isChordLine(lines[i]) && !looksLikeKeyLine(lines[i])){
+    const head = lines[i].trim();
+    // 「曲名　作詞・作曲／○○」のように1行に同居している場合は切り分ける
+    const cm = head.match(/^(.*?)[\s\u3000]*(作詞|作曲|編曲|words|music)[^\s]*[\s\u3000]*[／\/:：][\s\u3000]*(.+)$/i);
+    if (cm){
+      if (!out.title) out.title = cm[1].trim();
+      if (!out.artist) out.artist = cm[3].trim();
+      out.credit = head;
+    } else if (!out.title){
+      out.title = head;
+    }
+    i++;
+  }
+
+  let cur = null;
+  for (; i < lines.length; i++){
     const line = lines[i];
-    if (!line.trim()){ if(cur){out.blocks.push(cur);cur=null;} continue; }
-    if (/作詞|作曲|編曲/.test(line) && !out.credit){ out.credit = line.trim(); continue; }
-    const km = line.match(/Key\s*(?:on)?\s*([A-G][#b♭♯]?)/i);
-    const cm = line.normalize('NFKC').match(/(\d+)\s*Capo/i) || line.normalize('NFKC').match(/Capo\s*[:：]?\s*(\d+)/i);
-    if (km && !out.key){ out.key = normTok(km[1]); if(cm) out.capo = +cm[1]; continue; }
+    if (!line.trim()){ if (cur){ out.blocks.push(cur); cur = null; } continue; }
+
+    // クレジット行は本文に残さない
+    if (/(作詞|作曲|編曲)/.test(line) && !isChordLine(line)){
+      if (!out.credit) out.credit = line.trim();
+      if (!out.artist){
+        const am = line.match(/[／\/:：][\s\u3000]*(.+)$/);
+        if (am) out.artist = am[1].trim().split(/[\s\u3000]+/)[0];
+      }
+      continue;
+    }
+    // キー・カポの指定行も本文に残さない
+    const km = line.match(/Key\s*(?:on|=|:|：)?\s*([A-G][#b♭♯]?)/i);
+    const cp = line.normalize('NFKC').match(/(\d+)\s*Capo/i)
+            || line.normalize('NFKC').match(/Capo\s*[:：=]?\s*(\d+)/i);
+    if (km && line.trim().length < 40){
+      if (!out.key) out.key = normTok(km[1]);
+      if (cp && out.capo == null) out.capo = +cp[1];
+      continue;
+    }
+
     if (isChordLine(line)){
       if (cur) out.blocks.push(cur);
       cur = {chords: tokenize(line).map(t=>({...classify(t.raw), col:t.col})), lyrics:[]};
@@ -564,6 +688,12 @@ function parseSheet(text){
     }
   }
   if (cur) out.blocks.push(cur);
+
+  // --- 書いていなければコードから推測する ---
+  if (!out.key){
+    const g = guessKey(out.blocks);
+    if (g){ out.key = g.root + (g.mode === 'minor' ? 'm' : ''); out.keyGuessed = true; }
+  }
   return out;
 }
 
@@ -1051,7 +1181,7 @@ let playlist = [];
 let tab = 'list';
 let openSong = null;
 let scrolling = false, scrollTimer = null;
-let draft = {text:'', title:''};
+let draft = {text:'', title:'', artist:'', key:'', capo:0, keyEdited:false, keyGuessed:false};
 let pickRoot = 'C', pickQual = '';
 let editing = null;          // 編集中の曲ID
 let selectMode = false, selected = new Set();
@@ -1212,9 +1342,12 @@ function render(){
     const s = songs.find(x=>x.id===openSong);
     const shownKey = s.transpose ? shiftRoot(s.key, s.transpose) : s.key;
     hdr.innerHTML = `
-      <button class="ghost" onclick="go(tab)" aria-label="戻る">←</button>
-      <button class="star${s.fav?' on':''}" onclick="toggleFav('${s.id}')" aria-label="お気に入り">${s.fav?'★':'☆'}</button>
-      <div class="hdr-title">${esc(s.title)}</div>
+      <div class="hdr-row1">
+        <button class="ghost" onclick="go(tab)" aria-label="戻る">←</button>
+        <button class="star${s.fav?' on':''}" onclick="toggleFav('${s.id}')" aria-label="お気に入り">${s.fav?'★':'☆'}</button>
+        <div class="hdr-title">${esc(s.title || '(曲名なし)')}
+          ${s.artist ? `<div class="hdr-sub2">${esc(s.artist)}</div>` : ''}</div>
+      </div>
       <div class="meta">
         <span class="chipbtn">Key <b>${esc(shownKey||'—')}</b>
           <button class="stp" onclick="tr(-1)" aria-label="半音下げる">−</button>
@@ -1382,13 +1515,20 @@ function render(){
       <div class="card">
         <h2>ファイルから作る</h2>
         <p class="sub">コード譜のテキストを貼り付けるか、ファイルを読み込むと、コード行と歌詞行を自動で振り分けます。全角英数・♭記号・中黒区切りはそのままで構いません。</p>
-        <div class="field"><label for="draftTitle">曲名</label>
-          <input type="text" id="draftTitle" value="${esc(draft.title)}" oninput="draft.title=this.value" placeholder="あかね色"></div>
+        <div class="erow">
+          <div class="field"><label for="draftTitle">曲名</label>
+            <input type="text" id="draftTitle" value="${esc(draft.title)}" oninput="draft.title=this.value"></div>
+          <div class="field"><label for="draftArtist">アーティスト</label>
+            <input type="text" id="draftArtist" value="${esc(draft.artist||'')}" oninput="draft.artist=this.value"></div>
+          <div class="field"><label for="draftKey">原曲キー</label>
+            <input type="text" id="draftKey" value="${esc(draft.key||'')}" oninput="draft.key=this.value;draft.keyEdited=true" placeholder="C"></div>
+          <div class="field"><label for="draftCapo">カポ</label>
+            <input type="text" id="draftCapo" value="${draft.capo||0}" oninput="draft.capo=this.value"></div>
+        </div>
         <div class="field"><label for="draftText">コード譜テキスト</label>
           <textarea id="draftText" oninput="draft.text=this.value;previewDraft()" placeholder="Ｇ　Ａｍ　Ｂｍ　Ｃ&#10;恋心を隠したまんまで">${esc(draft.text)}</textarea></div>
         <div class="btnrow">
           <button class="ghost" onclick="document.getElementById('pickOne').click()">ファイルを1つ読み込む</button>
-          <button class="ghost" onclick="loadExample()">サンプルを入れる</button>
           <button class="act" onclick="saveDraft()">保存する</button>
         </div>
         <input type="file" id="pickOne" accept=".md,.txt,.docx,.pdf,.jpg,.jpeg,.png,.gif,.bmp,.webp" hidden onchange="if(this.files[0])loadOne(this.files[0])">
@@ -1848,6 +1988,7 @@ async function takeFiles(fileList){
     if (!nC){ out.push({name:f.name, folder, ok:false, why:'コード行が見つからない'}); continue; }
     out.push({name:f.name, folder, ok:true, pick:true, text,
       title: p.title || f.name.replace(/\.[^.]+$/,''),
+      artist: p.artist || '',
       key: p.key, capo: p.capo, nChord:nC,
       nLyric: p.blocks.reduce((a,b)=>a+b.lyrics.length,0)});
   }
@@ -1863,7 +2004,7 @@ function drawBatch(){
   box.innerHTML = `<div class="secthead" style="margin-top:18px">読み取れたファイル ${good.length} / ${batch.length}</div>` +
     batch.map((b,i)=>`<label class="brow${b.ok?'':' bad'}">
       ${b.ok?`<input type="checkbox" ${b.pick?'checked':''} onchange="batch[${i}].pick=this.checked;refreshCount()">`:'<span style="width:17px"></span>'}
-      <span class="bn">${esc(b.title||b.name)}<div class="bf">${esc(b.folder)} / ${esc(b.name)}</div></span>
+      <span class="bn">${esc(b.title||b.name)}<div class="bf">${b.artist?esc(b.artist)+' · ':''}${esc(b.folder)}${b.key?' · '+esc(b.key):''}</div></span>
       <span class="bs">${b.ok?`${b.nChord}行${b.key?' · '+esc(b.key):''}`:esc(b.why)}</span>
       ${b.ok?`<button class="mini" onclick="event.preventDefault();peekBatch(${i})">中身を見る</button>`:''}</label>`).join('') +
     (good.length ? `<div class="btnrow" style="margin-top:12px">
@@ -1872,8 +2013,7 @@ function drawBatch(){
 }
 function peekBatch(i){
   const b = batch[i]; if (!b || !b.ok) return;
-  draft.text = b.text;
-  draft.title = b.title;
+  applyParsedToDraft(b.text, b.name);
   render();
   setTimeout(()=>{
     const el = document.getElementById('draftPrev');
@@ -1889,8 +2029,8 @@ function importBatch(){
   const take = batch.filter(b=>b.ok&&b.pick);
   if (!take.length) return;
   take.forEach((b,i)=>songs.push({
-    id:'b'+Date.now()+'_'+i, folder:b.folder, title:b.title, artist:'',
-    key:b.key||'C', capo:b.capo||0, bpm:100, barsPerLine:8, transpose:0, text:b.text}));
+    id:'b'+Date.now()+'_'+i, folder:b.folder, title:b.title, artist:b.artist||'',
+    key:b.key||'C', capo:b.capo||0, bpm:100, barsPerLine:8, transpose:0, plays:0, text:b.text}));
   persist();
   batch = [];
   folderFilter = null;
@@ -2114,16 +2254,16 @@ function alert0(){
   setTimeout(()=>{ b.textContent = o; }, 1400);
 }
 
-function loadExample(){
-  draft.title = 'ごめんなさい';
-  draft.text = `イントロ Fmaj7 →5ｆ平行 Ｅｍ７（5ｆＥｍ） Fmaj7 / (4弦以下Up) Ｄｍ Ｅｍ Ｆ Ｇ
-Cadd9 G6 Fmaj7 G6
-道を間違えたのは雨降りのせいだと　本当の僕自身に目をつぶったせいで
-Dm C Dm7 C Dm7 C Dm (High UP)Em F E
-長い迷路が複雑になってゆく　あやまることが　あの時できたなら
-Am Am/G# Am/G D/F# Dm7 Em7 Fm 間奏
-泣いて泣いて泣いて　泣いてばかりいて　腫れ上がった目は　夕焼け映してる`;
-  render();
+// 読み込んだ内容から、曲名・アーティスト・キー・カポを欄に反映する
+function applyParsedToDraft(text, fileName){
+  const p = parseSheet(text);
+  draft.text   = text;
+  draft.title  = p.title || (fileName || '').replace(/\.[^.]+$/,'') || '';
+  draft.artist = p.artist || '';
+  draft.key    = p.key || '';
+  draft.capo   = p.capo || 0;
+  draft.keyGuessed = !!p.keyGuessed;
+  draft.keyEdited  = false;
 }
 
 async function loadOne(file){
@@ -2142,18 +2282,16 @@ async function loadOne(file){
     }
     else text = await readText(file);
   }catch(e){
-    const el = document.getElementById('draftPrev');
-    if (el) el.innerHTML = `<p class="empty">読み取れませんでした<br><span style="font-size:.76rem">${esc(e.message||'')}</span></p>`;
+    busy('読み取れませんでした: ' + (e.message||''));
     return;
   }
   if (!text.trim()){
     const el = document.getElementById('draftPrev');
     if (el) el.innerHTML = `<p class="empty">文字が見つかりませんでした。<br>
-      <span style="font-size:.76rem">PDF の場合、画像として取り込まれたものには文字の情報がありません。その PDF を画像にしてから読み込むと、文字の読み取りを試せます。</span></p>`;
+      <span style="font-size:.76rem">画像として作られた PDF には文字の情報がありません。その場合は画像に書き出してから読み込んでください。</span></p>`;
     return;
   }
-  draft.text = text;
-  draft.title = (parseSheet(text).title) || file.name.replace(/\.[^.]+$/,'');
+  applyParsedToDraft(text, file.name);
   render();
   setTimeout(()=>{
     const el = document.getElementById('draftPrev');
@@ -2171,15 +2309,29 @@ function previewDraft(){
     return;
   }
   const p = parseSheet(draft.text);
+  // 欄が空なら、貼り付けた内容から拾って埋める
+  if (!draft.title && p.title) draft.title = p.title;
+  if (!draft.artist && p.artist) draft.artist = p.artist;
+  if (!draft.keyEdited && !draft.key && p.key){
+    draft.key = p.key; draft.keyGuessed = !!p.keyGuessed;
+  }
   const nChord = p.blocks.filter(b=>b.chords.length).length;
   const nLyric = p.blocks.reduce((a,b)=>a+b.lyrics.length,0);
   const chords = new Set();
   p.blocks.forEach(b=>b.chords.forEach(c=>{ if(c.kind==='c') chords.add(c.text); }));
   if (stat) stat.innerHTML = `<div class="stat"><span>コード行 <b>${nChord}</b></span>
-    <span>歌詞行 <b>${nLyric}</b></span><span>種類 <b>${chords.size}</b></span>
-    ${p.key?`<span>Key <b>${p.key}</b></span>`:''}${p.capo?`<span>Capo <b>${p.capo}</b></span>`:''}</div>`;
-  const tmp = {...draft, key:p.key, capo:p.capo, transpose:0, bpm:100, barsPerLine:8, text:draft.text};
-  prev.innerHTML = '';
+    <span>歌詞行 <b>${nLyric}</b></span><span>種類 <b>${chords.size}</b></span></div>`;
+
+  const key = (draft.key || p.key || '').trim();
+  prev.innerHTML = `<div class="prevhead">
+      <div class="ph"><span>曲名</span><b>${esc(draft.title || '(未設定)')}</b></div>
+      <div class="ph"><span>アーティスト</span><b>${esc(draft.artist || '(未設定)')}</b></div>
+      <div class="ph"><span>原曲キー</span><b>${esc(key || '(未設定)')}${
+        (draft.keyGuessed && !draft.keyEdited && key) ? '<i>自動推測</i>' : ''}</b></div>
+      ${draft.capo ? `<div class="ph"><span>カポ</span><b>${esc(String(draft.capo))}</b></div>` : ''}
+    </div>`;
+  const tmp = {...draft, key, capo:(parseInt(draft.capo,10)||0), transpose:0,
+               bpm:100, barsPerLine:8, text:draft.text};
   prev.appendChild(renderSheet(tmp));
 }
 
@@ -2187,10 +2339,13 @@ function saveDraft(){
   if (!draft.text.trim()) return;
   const p = parseSheet(draft.text);
   const id = 'u'+Date.now();
-  songs.push({id, folder:'未分類', title:draft.title||p.title||'無題', artist:'', key:p.key||'C',
-    capo:p.capo||0, bpm:100, barsPerLine:8, transpose:0, text:draft.text});
+  songs.push({id, folder:'未分類', title:draft.title||p.title||'無題',
+    artist: draft.artist || p.artist || '',
+    key: (draft.key || p.key || 'C').trim(),
+    capo: Math.max(0, Math.min(12, parseInt(draft.capo,10) || p.capo || 0)),
+    bpm: p.bpm || 100, barsPerLine:8, transpose:0, plays:0, text:draft.text});
   persist();
-  draft = {text:'', title:''};
+  draft = {text:'', title:'', artist:'', key:'', capo:0, keyEdited:false, keyGuessed:false};
   go('list');
 }
 
