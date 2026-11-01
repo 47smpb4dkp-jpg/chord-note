@@ -168,6 +168,11 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
 .sdot.ok{background:#3f9e5a}
 .sdot.wait{background:var(--accent);animation:pulse 1.2s ease-in-out infinite}
 .sdot.err{background:#c0392b}
+.syncerr{flex:1 1 100%;background:var(--accent-soft);border-radius:7px;padding:9px 11px;margin-top:4px;
+  display:flex;flex-direction:column;gap:6px;align-items:flex-start}
+.syncerr b{color:var(--accent);font-size:.78rem}
+.syncerr code{font-family:var(--font-mono);font-size:.68rem;line-height:1.5;word-break:break-all;
+  background:none;border:none;padding:0;color:var(--fg)}
 .syncbar .who{margin-left:auto;font-size:.7rem;opacity:.75;overflow:hidden;text-overflow:ellipsis;
   white-space:nowrap;max-width:48%}
 
@@ -752,22 +757,46 @@ function initSync(){
       if (u) startSync(); else stopSync();
       renderSyncBar();
     });
-    firebase.auth().getRedirectResult().catch(()=>{});
-  }catch(e){ syncState = 'unavailable'; }
+    firebase.auth().getRedirectResult().catch(e=>showSyncError(e, 'redirect戻り'));
+  }catch(e){ showSyncError(e, '初期化'); }
+}
+
+let syncError = '';
+
+function showSyncError(e, where){
+  const code = (e && e.code) || '';
+  const msg  = (e && e.message) || String(e);
+  syncError = where + ' / ' + (code || '(コードなし)') + ' / ' + msg;
+  syncState = 'error';
+  renderSyncBar();
 }
 
 async function signIn(){
+  syncError = '';
   const provider = new firebase.auth.GoogleAuthProvider();
   try{
     await firebase.auth().signInWithPopup(provider);
+    syncError = '';
   }catch(e){
-    // iPad のホーム画面起動などポップアップが開けない場合
-    try{ await firebase.auth().signInWithRedirect(provider); }
-    catch(e2){ syncState = 'error'; renderSyncBar(); }
+    const code = e && e.code;
+    // ポップアップを自分で閉じた／二重に押した場合は何もしない
+    if (code === 'auth/cancelled-popup-request' || code === 'auth/user-cancelled') return;
+    if (code === 'auth/popup-closed-by-user'){
+      syncError = 'ログイン画面が閉じられました。もう一度お試しください。';
+      syncState = 'error'; renderSyncBar(); return;
+    }
+    // ポップアップが開けない環境（iPad のホーム画面起動など）だけ画面遷移に切り替える
+    if (code === 'auth/popup-blocked' || code === 'auth/operation-not-supported-in-this-environment'){
+      try{ await firebase.auth().signInWithRedirect(provider); return; }
+      catch(e2){ showSyncError(e2, 'redirect'); return; }
+    }
+    showSyncError(e, 'popup');
   }
 }
-async function signOutSync(){ await firebase.auth().signOut(); }
-
+async function signOutSync(){
+  syncError = '';
+  try{ await firebase.auth().signOut(); }catch(e){ showSyncError(e, 'signOut'); }
+}
 function songsCol(){ return fb.collection('users').doc(fbUser.uid).collection('songs'); }
 
 function startSync(){
@@ -787,7 +816,7 @@ function startSync(){
     syncState = 'on';
     renderSyncBar();
     if (!openSong) render();
-  }, ()=>{ syncState = 'error'; renderSyncBar(); });
+  }, e=>showSyncError(e, '読み取り'));
 }
 function stopSync(){
   if (fbUnsub){ fbUnsub(); fbUnsub = null; }
@@ -801,7 +830,7 @@ async function pushAll(){
     const {id, ...rest} = s;
     batch.set(songsCol().doc(id), rest, {merge:false});
   });
-  try{ await batch.commit(); }catch(e){}
+  try{ await batch.commit(); }catch(e){ showSyncError(e, '初回アップロード'); }
 }
 
 function schedulePush(){
@@ -815,7 +844,7 @@ function schedulePush(){
       snap.docs.forEach(d=>{ if (!localIds.has(d.id)) batch.delete(d.ref); });
       songs.forEach(s=>{ const {id, ...rest} = s; batch.set(songsCol().doc(id), rest, {merge:false}); });
       await batch.commit();
-    }catch(e){}
+    }catch(e){ showSyncError(e, '書き込み'); }
   }, 900);
 }
 
@@ -825,14 +854,26 @@ function renderSyncBar(){
   const label = {off:'同期していません', connecting:'接続中…', on:'同期中',
     error:'同期できません', unavailable:'この環境では同期を使えません'}[syncState] || '';
   if (syncState === 'unavailable'){ el.innerHTML = `<span class="sdot err"></span>${label}`; return; }
+  const errBox = syncError
+    ? `<div class="syncerr"><b>うまくいきませんでした</b>
+        <code>${esc(syncError)}</code>
+        <button class="mini" onclick="copyErr()">この内容をコピー</button></div>`
+    : '';
   if (fbUser){
     el.innerHTML = `<span class="sdot ${syncState==='on'?'ok':'wait'}"></span>${label}
       <span class="who">${esc(fbUser.email||'')}</span>
-      <button class="mini" onclick="signOutSync()">やめる</button>`;
+      <button class="mini" onclick="signOutSync()">やめる</button>` + errBox;
   } else {
-    el.innerHTML = `<span class="sdot"></span>${label}
-      <button class="mini" onclick="signIn()">Google でログインして同期する</button>`;
+    el.innerHTML = `<span class="sdot ${syncState==='error'?'err':''}"></span>${label}
+      <button class="mini" onclick="signIn()">Google でログインして同期する</button>` + errBox;
   }
+}
+function copyErr(){
+  navigator.clipboard.writeText(syncError).catch(()=>{
+    const r = document.createRange();
+    r.selectNodeContents(document.querySelector('.syncerr code'));
+    const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
+  });
 }
 
 /* ============ 5. 状態 ============ */
