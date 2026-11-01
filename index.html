@@ -1032,6 +1032,7 @@ function startSync(){
       pushAll();                                   // 初回: 手元の曲を上げる
     } else {
       songs = remote;
+      markPushed(songs);
       if (migrateSongs()) schedulePush();
       try{ localStorage.setItem('cn_songs', JSON.stringify(songs)); }catch(e){}
     }
@@ -1041,6 +1042,7 @@ function startSync(){
   }, e=>showSyncError(e, '読み取り'));
 }
 function stopSync(){
+  pushed = new Map();
   if (fbUnsub){ fbUnsub(); fbUnsub = null; }
   if (metaUnsub){ metaUnsub(); metaUnsub = null; }
   syncState = 'off';
@@ -1053,7 +1055,14 @@ async function pushAll(){
     const {id, ...rest} = s;
     batch.set(songsCol().doc(id), rest, {merge:false});
   });
-  try{ await batch.commit(); }catch(e){ showSyncError(e, '初回アップロード'); }
+  try{ await batch.commit(); markPushed(songs); }catch(e){ showSyncError(e, '初回アップロード'); }
+}
+
+// 送信済みの内容を覚えておき、変わった曲だけ書き込む
+let pushed = new Map();   // id -> JSON文字列
+function snapOf(s){ const {id, ...rest} = s; return JSON.stringify(rest); }
+function markPushed(list){
+  pushed = new Map(list.map(s=>[s.id, snapOf(s)]));
 }
 
 function schedulePush(){
@@ -1061,12 +1070,27 @@ function schedulePush(){
   clearTimeout(pushTimer);
   pushTimer = setTimeout(async ()=>{
     try{
-      const snap = await songsCol().get();
-      const localIds = new Set(songs.map(x=>x.id));
-      const batch = fb.batch();
-      snap.docs.forEach(d=>{ if (!localIds.has(d.id)) batch.delete(d.ref); });
-      songs.forEach(s=>{ const {id, ...rest} = s; batch.set(songsCol().doc(id), rest, {merge:false}); });
-      await batch.commit();
+      const nowIds = new Set(songs.map(x=>x.id));
+      const writes = [];
+      songs.forEach(s=>{
+        const j = snapOf(s);
+        if (pushed.get(s.id) !== j) writes.push({id:s.id, json:j, song:s});
+      });
+      const deletes = [...pushed.keys()].filter(id=>!nowIds.has(id));
+      if (!writes.length && !deletes.length) return;
+
+      // 1回のまとめ書きは400件まで
+      const ops = [...writes.map(w=>({t:'w', ...w})), ...deletes.map(id=>({t:'d', id}))];
+      for (let i = 0; i < ops.length; i += 400){
+        const b = fb.batch();
+        ops.slice(i, i + 400).forEach(o=>{
+          if (o.t === 'd') b.delete(songsCol().doc(o.id));
+          else { const {id, ...rest} = o.song; b.set(songsCol().doc(id), rest, {merge:false}); }
+        });
+        await b.commit();
+      }
+      writes.forEach(w=>pushed.set(w.id, w.json));
+      deletes.forEach(id=>pushed.delete(id));
     }catch(e){ showSyncError(e, '書き込み'); }
   }, 900);
 }
@@ -1128,20 +1152,26 @@ function shareablePayload(list){
 function shareablePlaylists(songList){
   const ids = new Set(songList.map(x=>x.id));
   return playlists
-    .map(pl=>({id:pl.id, name:pl.name, songs:pl.songs.filter(i=>ids.has(i))}))
+    .map(pl=>{
+      const kept = pl.songs.filter(i=>ids.has(i));
+      return {id:pl.id, name:pl.name, songs:kept,
+              partial: kept.length < pl.songs.length, total: pl.songs.length};
+    })
     .filter(pl=>pl.songs.length);
 }
 
 async function createShare(kind, songList, title){
   if (!fb || !fbUser){ alertShare('共有リンクを作るにはログインが必要です。'); return; }
   const id = newShareId();
-  const pls = kind === 'all' ? shareablePlaylists(songList) : [];
+  // 1曲だけの共有以外は、セットリストとマイコードも一緒に渡す
+  const withExtras = kind !== 'song';
+  const pls = withExtras ? shareablePlaylists(songList) : [];
   try{
     await fb.collection('shares').doc(id).set({
       uid: fbUser.uid, type: kind, title: title || '',
       songs: shareablePayload(songList),
       playlists: pls,
-      myChords: kind === 'all' ? myChords.map(m=>({...m})) : [],
+      myChords: withExtras ? myChords.map(m=>({...m})) : [],
       createdAt: firebase.firestore.FieldValue.serverTimestamp()
     });
     await fb.collection('users').doc(fbUser.uid).collection('shares').doc(id)
@@ -1200,7 +1230,7 @@ async function listShares(){
     }
     box.innerHTML = rows.map(v=>`<div class="shrow">
         <span class="sn">${esc(v.title || (v.type==='all'?'楽曲リスト全体':'曲'))}
-          <div class="sf">${v.type==='all'?'リスト全体':'1曲'} · ${v.count||0}曲</div></span>
+          <div class="sf">${v.type==='all'?'リスト全体':(v.type==='some'?'選んだ曲':'1曲')} · ${v.count||0}曲</div></span>
         <button class="mini" onclick="copyShare('${v.id}')">リンクをコピー</button>
         <button class="mini" onclick="openShare('${v.id}')">開く</button>
         <button class="mini danger" onclick="revokeShare('${v.id}')">停止</button></div>`).join('');
@@ -1230,9 +1260,9 @@ function showShareDialog(id, kind, title, n){
   const url = shareUrl(id);
   document.getElementById('popName').textContent = '共有リンクができました';
   document.getElementById('popDesc').textContent =
-    (kind==='all'
-      ? `楽曲リスト全体（${n}曲・セットリスト・マイコード）`
-      : `${title} / ${n}曲`) + '　—　相手はログインなしで見られます。';
+    (kind==='song'
+      ? `${title} / 1曲`
+      : `${title}（${n}曲・セットリスト・マイコード）`) + '　—　相手はログインなしで見られます。';
   document.getElementById('popGrid').innerHTML =
     `<div style="flex:1 1 100%"><input type="text" id="shareUrlBox" readonly value="${esc(url)}"
        onclick="this.select()" style="width:100%;font-size:.78rem">
@@ -1641,6 +1671,7 @@ function render(){
       html = `<div class="selbar">
         <button class="mini" onclick="moveSelected()" ${selected.size?'':'disabled'}>ジャンルを変える</button>
         <button class="mini" onclick="addSelectedToPlaylist()" ${selected.size?'':'disabled'}>プレイリストに追加</button>
+        <button class="mini" onclick="shareSelected()" ${selected.size?'':'disabled'}>共有リンクを作る</button>
         <button class="mini danger" onclick="askDeleteSelected()" ${selected.size?'':'disabled'}>削除</button>
       </div>` + html;
     }
@@ -1676,7 +1707,8 @@ function render(){
         ? `<div class="pl">` + playlists.map(x=>`
             <div class="r">
               <button class="nm" style="flex:1;text-align:left;min-width:0" onclick="openPl('${x.id}')">
-                ${esc(x.name)}<div class="ar">${x.songs.length} 曲</div></button>
+                ${esc(x.name)}${x.partial?'<em class="edited">一部の曲のみ</em>':''}
+                <div class="ar">${x.songs.length} 曲${x.partial?` / 全${x.total}曲`:''}</div></button>
               ${isViewer?'':`<button class="mv" onclick="renamePl('${x.id}')" aria-label="名前を変える">✎</button>
               <button class="mv" onclick="askDeletePl('${x.id}')" aria-label="削除">✕</button>`}
             </div>`).join('') + `</div>`
@@ -1693,7 +1725,7 @@ function render(){
       <div class="hdr-row1">
         <button class="ghost" onclick="openList=null;listEdit=false;render()" aria-label="戻る">←</button>
         <div class="hdr-title">${esc(pl.name)}
-          <div class="hdr-sub2">${pl.songs.length} 曲</div></div>
+          <div class="hdr-sub2">${pl.songs.length} 曲${pl.partial?` · 全${pl.total}曲のうち共有された分だけ`:''}</div></div>
       </div>
       <div class="meta">
         ${isViewer ? '' : `
@@ -1711,7 +1743,10 @@ function render(){
       view.appendChild(d);
       return;
     }
-    d.innerHTML = `<div class="pl" id="plBox">` + pl.songs.map((id,i)=>{
+    d.innerHTML = (pl.partial
+      ? `<div class="warnbox"><b>一部の曲のみ</b>
+          このセットリストは全${pl.total}曲ですが、共有されたのは ${pl.songs.length} 曲です。</div>`
+      : '') + `<div class="pl" id="plBox">` + pl.songs.map((id,i)=>{
         const x = songs.find(y=>y.id===id);
         if (!x) return `<div class="r missing" data-i="${i}"><span class="num">${i+1}</span>
           <span class="nm" style="flex:1;color:var(--fg-dim)">（削除された曲）</span>
@@ -1855,6 +1890,7 @@ function render(){
       </div>`;
     view.appendChild(d);
     previewDraft();
+    if (batch.length) drawBatch();
   }
 
   if (tab==='ch'){
@@ -2192,6 +2228,7 @@ async function doResetAll(){
         snap.docs.slice(i, i + 400).forEach(d=>b.delete(d.ref));
         await b.commit();
       }
+      pushed = new Map();
     }catch(e){ showSyncError(e, '全消去'); }
   }
   closePop(); render();
@@ -2382,6 +2419,12 @@ function askOk(){
 function shareSong(id){
   const s = songs.find(x=>x.id===id); if (!s) return;
   createShare('song', [s], s.title);
+}
+function shareSelected(){
+  if (isViewer || !selected.size) return;
+  const list = songs.filter(x=>selected.has(x.id));
+  createShare('some', list, `選んだ${list.length}曲`);
+  selectMode = false; selected.clear();
 }
 function shareAll(){
   if (!songs.length){ alertShare('共有する曲がありません。'); return; }
