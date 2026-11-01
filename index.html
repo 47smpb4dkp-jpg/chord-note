@@ -78,6 +78,7 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
   padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));
   padding-block:14px 28px}
 .wrap{max-width:760px;margin:0 auto}
+.wrap.wide{max-width:1700px}
 
 /* フッタータブ */
 #tabs{flex:0 0 auto;display:grid;grid-template-columns:repeat(4,1fr);background:var(--surface);
@@ -182,8 +183,9 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
 @media (min-width:900px){ .split{grid-template-columns:1fr 1fr;align-items:start} }
 .split .card{margin-bottom:0;display:flex;flex-direction:column;min-width:0}
 .split textarea{min-height:52vh;max-height:68vh;margin:0}
-.split #editPrev,.split #bPrev{min-height:52vh;max-height:68vh;overflow-y:auto;
+.split #editPrev,.split #bPrev{min-height:52vh;max-height:68vh;overflow-y:auto;overflow-x:hidden;
   background:var(--surface-2);border:1px solid var(--line);border-radius:9px;padding:12px}
+.split #editPrev .lrow,.split #bPrev .lrow{overflow:visible}
 
 /* 行ごとの切り替えボタン */
 .lntg{position:absolute;left:-30px;top:0;width:24px;height:1.5em;border-radius:6px;
@@ -1539,7 +1541,10 @@ function renderTabs(){
       <svg viewBox="0 0 24 24">${ICONS[ic]}</svg><span>${label}</span></button>`).join('');
 }
 
-function go(t){ stopScroll(); tab=t; openSong=null; editing=null; batchEdit=null; render(); }
+function stopSongRec(){
+  if (songRec && songRec.state === 'recording'){ try{ songRec.stop(); }catch(e){} }
+}
+function go(t){ stopScroll(); stopSongRec(); tab=t; openSong=null; editing=null; batchEdit=null; render(); }
 function openSongView(id){
   stopScroll(); openSong=id; editing=null;
   const x = songs.find(s=>s.id===id);
@@ -1554,6 +1559,8 @@ function render(){
   const hdr = document.getElementById('hdrInner');
   const view = document.getElementById('view');
   view.innerHTML = '';
+  // 編集中は本文と確認を横に広く使う
+  view.classList.toggle('wide', !!editing || (tab === 'new' && batchEdit !== null));
 
   if (editing){
     const s = songs.find(x=>x.id===editing);
@@ -2114,7 +2121,7 @@ function setMyChord(v){
 }
 
 /* ---- 編集 ---- */
-function editSong(id){ if (isViewer) return; stopScroll(); editing = id; openSong = null; render();
+function editSong(id){ if (isViewer) return; stopScroll(); stopSongRec(); editing = id; openSong = null; render();
   document.getElementById('main').scrollTop = 0; }
 function cancelEdit(){ const id = editing; editing = null; openSong = id; render(); }
 
@@ -2149,6 +2156,27 @@ function livePreview(){
   box.innerHTML = '';
   box.appendChild(renderSheet(tmp, {lineToggle: toggleLineAt}));
   box.scrollTop = keep;
+  fitSheet(box);
+}
+
+// 一番長い行が収まるまで文字を少しずつ小さくする（横スクロールを出さないため）
+function fitSheet(box){
+  const sheet = box.querySelector('#sheet');
+  if (!sheet) return;
+  const avail = box.clientWidth - 44;
+  if (avail <= 0) return;
+  let size = 16;
+  sheet.style.setProperty('--sheet-size', size + 'px');
+  for (let i = 0; i < 14; i++){
+    let widest = 0;
+    sheet.querySelectorAll('.lrow, .crow').forEach(r=>{
+      const w = r.scrollWidth || 0;
+      if (w > widest) widest = w;
+    });
+    if (widest <= avail || size <= 9) break;
+    size = Math.max(9, size - 1);
+    sheet.style.setProperty('--sheet-size', size + 'px');
+  }
 }
 
 // その行をコード行にする／歌詞行に戻す（本文の先頭の @ を付け外しする）
@@ -2575,24 +2603,39 @@ function loadLib(url, globalName){
 }
 
 // 文字の並びを、横位置を保ったままテキストの行に戻す
-function itemsToLines(items, yTol){
-  if (!items.length) return '';
+// items: {str, x, y0, y1, w}
+function itemsToLines(items){
+  const src = items.filter(i=>i.str && i.str.trim());
+  if (!src.length) return '';
+
   // 1文字あたりの幅の代表値（列の計算に使う）
-  const widths = items.filter(i=>i.str.trim() && i.w > 0)
+  const widths = src.filter(i=>i.w > 0)
     .map(i=>i.w / [...i.str].reduce((a,c)=>a + charWidth(c), 0))
     .filter(v=>v > 0).sort((a,b)=>a-b);
   const cw = widths.length ? widths[Math.floor(widths.length/2)] : 6;
 
+  // 縦の範囲が重なっていれば同じ行とみなす（小書き文字や伸ばし棒が分かれないように）
   const rows = [];
-  items.forEach(it=>{
-    if (!it.str.trim()) return;
-    let row = rows.find(r=>Math.abs(r.y - it.y) <= yTol);
-    if (!row){ row = {y: it.y, parts: []}; rows.push(row); }
-    row.parts.push(it);
+  [...src].sort((a,b)=>a.y0 - b.y0).forEach(it=>{
+    const h = Math.max(1, it.y1 - it.y0);
+    const row = rows.find(r=>{
+      const ov = Math.min(r.y1, it.y1) - Math.max(r.y0, it.y0);
+      const rh = Math.max(1, r.y1 - r.y0);
+      return ov > 0.34 * Math.min(h, rh);
+    });
+    if (row){
+      row.parts.push(it);
+      row.y0 = Math.min(row.y0, it.y0);
+      row.y1 = Math.max(row.y1, it.y1);
+    } else {
+      rows.push({y0: it.y0, y1: it.y1, parts: [it]});
+    }
   });
-  rows.sort((a,b)=>a.y - b.y);
+  rows.sort((a,b)=>a.y0 - b.y0);
+  return rowsToText(rows, cw, Math.min(...src.map(i=>i.x)));
+}
 
-  const minX = Math.min(...items.map(i=>i.x));
+function rowsToText(rows, cw, minX){
   return rows.map(r=>{
     r.parts.sort((a,b)=>a.x - b.x);
     let line = '', col = 0;
@@ -2617,12 +2660,14 @@ async function readPdf(file){
   for (let n = 1; n <= doc.numPages; n++){
     const page = await doc.getPage(n);
     const tc = await page.getTextContent();
-    const items = tc.items.map(it=>({
-      str: it.str, x: it.transform[4], y: -it.transform[5], w: it.width
-    }));
-    pages.push(itemsToLines(items, 3));
+    const items = tc.items.map(it=>{
+      const h = it.height || Math.abs(it.transform[3]) || 10;
+      const top = -it.transform[5] - h;
+      return {str: it.str, x: it.transform[4], y0: top, y1: top + h, w: it.width};
+    });
+    pages.push(itemsToLines(items));
   }
-  return fixOcrChords(pages.join('\n\n'));
+  return fixOcrChords(cleanOcrArtifacts(pages.join('\n\n')));
 }
 
 // OCR の前に、背景色によらず「白地に黒文字」へ揃える
@@ -2657,6 +2702,25 @@ function normalizeImage(img){
   }
   cx.putImageData(d, 0, 0);
   return cv;
+}
+
+// Word の編集記号やページの飾りなど、譜面と関係のないものを取り除く
+function cleanOcrArtifacts(text){
+  const lines = text.replace(/\r\n/g,'\n').split('\n').map(line=>{
+    let L = line;
+    // 行末の改行マーク（Word の ↵ が < などとして読まれたもの）
+    L = L.replace(/[\s\u3000]*[<＜>＞↵⏎¶␊←]+[\s\u3000]*$/, '');
+    // Word の下線・フィールドが _ として読まれたもの
+    L = L.replace(/_{1,}/g, ' ');
+    // ページの隅の飾りだけの行
+    if (/^[\s\u3000]*[「」『』⌐¬гΓ|｜丁L][\s\u3000]*$/.test(L)) L = '';
+    return L.replace(/[\s\u3000]+$/, '');
+  });
+  // 文字が1つも無い行（記号だけの行）は空行にする
+  const hasContent = L => /[A-Za-zＡ-Ｚａ-ｚ0-9０-９ぁ-んァ-ヶ一-龠]/.test(L);
+  return lines.map(L=>hasContent(L) ? L : '').join('\n')
+    // 3行以上の空行は2行にまとめる
+    .replace(/\n{3,}/g, '\n\n');
 }
 
 // 読み取り結果のうち、コードらしい語だけ見た目の似た文字を直す
@@ -2713,15 +2777,28 @@ async function readImage(file, onProgress){
   });
   try{
     const {data} = await worker.recognize(cv);
-    const items = [];
-    (data.lines || []).forEach(ln=>{
-      (ln.words || []).forEach(w=>{
-        items.push({str: w.text, x: w.bbox.x0, y: w.bbox.y0,
-          w: w.bbox.x1 - w.bbox.x0});
-      });
-    });
-    const text = items.length ? itemsToLines(items, 10) : (data.text || '');
-    return fixOcrChords(text);
+
+    // 認識ソフトが出した行の区切りを尊重する（小書き文字や伸ばし棒が分かれないように）
+    const rows = (data.lines || []).map(ln=>{
+      const parts = (ln.words || [])
+        .filter(w=>w.text && w.text.trim())
+        .map(w=>({str: w.text, x: w.bbox.x0, w: w.bbox.x1 - w.bbox.x0}));
+      return parts.length ? {y0: ln.bbox.y0, y1: ln.bbox.y1, parts} : null;
+    }).filter(Boolean);
+
+    let text;
+    if (rows.length){
+      const all = rows.flatMap(r=>r.parts);
+      const ws = all.filter(i=>i.w > 0)
+        .map(i=>i.w / [...i.str].reduce((a,c)=>a + charWidth(c), 0))
+        .filter(v=>v > 0).sort((a,b)=>a-b);
+      const cw = ws.length ? ws[Math.floor(ws.length/2)] : 10;
+      rows.sort((a,b)=>a.y0 - b.y0);
+      text = rowsToText(rows, cw, Math.min(...all.map(i=>i.x)));
+    } else {
+      text = data.text || '';
+    }
+    return fixOcrChords(cleanOcrArtifacts(text));
   } finally { await worker.terminate(); }
 }
 
@@ -2829,6 +2906,7 @@ function batchPreview(){
     capo:parseInt(g('bCapo'),10)||0, transpose:0, bpm:100, barsPerLine:8},
     {lineToggle: toggleLineAt}));
   box.scrollTop = keep;
+  fitSheet(box);
 }
 
 // 取り込む前に、選んだ曲のジャンルをまとめて変える
@@ -2992,17 +3070,64 @@ async function loadAudioSlot(song){
   if (_objUrl){ URL.revokeObjectURL(_objUrl); _objUrl = null; }
   if (!blob){
     slot.innerHTML = `<div class="btnrow" style="margin:0">
-      <button class="ghost" onclick="document.getElementById('attachAudio').click()">音源を添付する</button></div>
-      <p class="hint">弾き語りの参考用に、原曲や自分の録音を置いておけます。</p>`;
+      <button class="act" id="songRecBtn" onclick="toggleSongRec('${song.id}')">ここで録音する</button>
+      <button class="ghost" onclick="document.getElementById('attachAudio').click()">ファイルから選ぶ</button></div>
+      <p class="hint" id="songRecMsg">譜面を見ながらそのまま録れます。止めると自動でこの曲に付きます。</p>`;
     return;
   }
   _objUrl = URL.createObjectURL(blob);
   slot.innerHTML = `<audio controls preload="metadata" src="${_objUrl}" style="width:100%"></audio>
     <div class="btnrow" style="margin-top:9px">
-      <button class="ghost" onclick="document.getElementById('attachAudio').click()">差し替える</button>
-      <button class="ghost" onclick="removeAudio('${song.id}')">外す</button>
-    </div>`;
+      <button class="ghost" id="songRecBtn" onclick="toggleSongRec('${song.id}')">録り直す</button>
+      <button class="ghost" onclick="document.getElementById('attachAudio').click()">ファイルから選ぶ</button>
+      <button class="ghost danger" onclick="removeAudio('${song.id}')">外す</button>
+    </div>
+    <p class="hint" id="songRecMsg" style="margin-top:7px"></p>`;
 }
+/* ---- 曲画面での録音 ---- */
+let songRec = null, songRecChunks = [], songRecTimer = null, songRecStart = 0;
+
+async function toggleSongRec(id){
+  const btn = document.getElementById('songRecBtn');
+  const msg = document.getElementById('songRecMsg');
+  if (songRec && songRec.state === 'recording'){ songRec.stop(); return; }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+    if (msg) msg.textContent = 'このブラウザではマイクを使えません。';
+    return;
+  }
+  try{
+    const stream = await navigator.mediaDevices.getUserMedia({audio:{
+      echoCancellation:false, noiseSuppression:false, autoGainControl:false}});
+    songRecChunks = [];
+    songRec = new MediaRecorder(stream);
+    songRec.ondataavailable = e=>{ if (e.data.size) songRecChunks.push(e.data); };
+    songRec.onstop = async ()=>{
+      clearInterval(songRecTimer);
+      stream.getTracks().forEach(t=>t.stop());
+      const blob = new Blob(songRecChunks, {type: songRec.mimeType || 'audio/webm'});
+      songRec = null;
+      const ok = await putAudio(id, blob);
+      const song = songs.find(x=>x.id===id);
+      if (song){ song.hasAudio = ok; persist(); }
+      loadAudioSlot(song);
+      alertShare(ok ? '録音をこの曲に付けました' : '保存できませんでした');
+    };
+    songRec.start();
+    songRecStart = Date.now();
+    if (btn){ btn.textContent = '停止して付ける'; btn.classList.add('rec'); btn.classList.remove('ghost'); }
+    songRecTimer = setInterval(()=>{
+      const m = document.getElementById('songRecMsg');
+      if (!m) return;
+      const t = Math.floor((Date.now()-songRecStart)/1000);
+      m.textContent = '録音中 ' + Math.floor(t/60) + ':' + String(t%60).padStart(2,'0');
+    }, 250);
+  }catch(e){
+    if (msg) msg.textContent = e.name === 'NotAllowedError'
+      ? 'マイクの使用が許可されませんでした。ブラウザの設定から許可してください。'
+      : 'マイクを開けませんでした（' + (e.message||e.name) + '）。';
+  }
+}
+
 async function attachTo(id, file){
   const ok = await putAudio(id, file);
   const song = songs.find(x=>x.id===id);
@@ -3327,6 +3452,15 @@ if (_share && /^[a-z2-9]{6,32}$/.test(_share)){
 if ('serviceWorker' in navigator){
   window.addEventListener('load', ()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));
 }
+
+let _rz = null;
+window.addEventListener('resize', ()=>{
+  clearTimeout(_rz);
+  _rz = setTimeout(()=>{
+    const a = document.getElementById('editPrev'); if (a) fitSheet(a);
+    const b = document.getElementById('bPrev');    if (b) fitSheet(b);
+  }, 160);
+});
 
 if (!isViewer) render();
 </script>
