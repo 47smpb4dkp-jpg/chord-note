@@ -15,7 +15,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700&family=Roboto+Mono:wght@400;500;700&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700&family=Roboto+Mono:wght@400;500;700&family=BIZ+UDGothic:wght@400;700&display=swap">
 <style>
 :root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
 body{margin:0;font:14px system-ui,sans-serif}
@@ -36,6 +36,8 @@ img{max-width:100%}
   --note:#8a6d3b;          /* 演奏指示 */
   --font-ja:"Zen Kaku Gothic New",-apple-system,"Hiragino Kaku Gothic ProN","Noto Sans JP",sans-serif;
   --font-mono:"Roboto Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  /* 日本語を含む本文の入力欄用。半角2つと全角1つが同じ幅になる */
+  --font-grid:"BIZ UDGothic","MS Gothic","Osaka-Mono",monospace;
   color-scheme:light;
 }
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
@@ -286,6 +288,9 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
 .field label{display:block;font-size:.74rem;font-weight:700;letter-spacing:.05em;color:var(--fg-dim);margin-bottom:5px}
 textarea,input[type=text]{width:100%;background:var(--surface);color:var(--fg);border:1px solid var(--line);
   border-radius:9px;padding:10px 12px;font-family:var(--font-mono);font-size:.84rem;line-height:1.55}
+/* コード譜の入力欄だけ、全角と半角がきっちり 2:1 になる文字にする */
+#eText,#bText,#draftText{font-family:var(--font-grid);font-size:.92rem;line-height:1.6;
+  tab-size:2;white-space:pre;overflow-wrap:normal}
 textarea{min-height:190px;resize:vertical;white-space:pre;overflow-wrap:normal;overflow-x:auto}
 .hint{font-size:.74rem;color:var(--fg-dim);line-height:1.6;margin:6px 0 0}
 .btnrow{display:flex;gap:8px;flex-wrap:wrap;margin-top:4px}
@@ -2643,11 +2648,7 @@ function itemsToLines(items){
   const src = items.filter(i=>i.str && i.str.trim());
   if (!src.length) return '';
 
-  // 1文字あたりの幅の代表値（列の計算に使う）
-  const widths = src.filter(i=>i.w > 0)
-    .map(i=>i.w / [...i.str].reduce((a,c)=>a + charWidth(c), 0))
-    .filter(v=>v > 0).sort((a,b)=>a-b);
-  const cw = widths.length ? widths[Math.floor(widths.length/2)] : 6;
+  const cw = estimateCharWidth(src);
 
   // 縦の範囲が重なっていれば同じ行とみなす（小書き文字や伸ばし棒が分かれないように）
   const rows = [];
@@ -2675,13 +2676,26 @@ function rowsToText(rows, cw, minX){
     r.parts.sort((a,b)=>a.x - b.x);
     let line = '', col = 0;
     r.parts.forEach(pt=>{
-      const target = Math.round((pt.x - minX) / cw);
+      let target = Math.round((pt.x - minX) / cw);
+      // 読み取りのずれで極端に離れた位置になることがあるので、間隔に上限を設ける
+      if (target - col > 40) target = col + 40;
       while (col < target){ line += ' '; col++; }
       line += pt.str;
       for (const c of pt.str) col += charWidth(c);
     });
     return line.replace(/\s+$/,'');
   }).join('\n');
+}
+
+// 1文字（半角1つ分）の幅を見積もる。
+// 日本語は字幅が揃っているので、そちらを優先して使う
+function estimateCharWidth(items){
+  const per = it => it.w / [...it.str].reduce((a,c)=>a + charWidth(c), 0);
+  const med = arr => arr.length ? [...arr].sort((a,b)=>a-b)[Math.floor(arr.length/2)] : 0;
+  const cjk = items.filter(i=>i.w > 0 && /[ぁ-んァ-ヶ一-龠]/.test(i.str)).map(per).filter(v=>v > 0);
+  if (cjk.length >= 3) return med(cjk);
+  const all = items.filter(i=>i.w > 0).map(per).filter(v=>v > 0);
+  return med(all) || 6;
 }
 
 async function readPdf(file){
@@ -2742,7 +2756,8 @@ function normalizeImage(img){
 // Word の編集記号やページの飾りなど、譜面と関係のないものを取り除く
 function cleanOcrArtifacts(text){
   const lines = text.replace(/\r\n/g,'\n').split('\n').map(line=>{
-    let L = line;
+    // 読み取りで混ざる空白の種類を、半角空白に揃える
+    let L = line.replace(/[\u00A0\u2000-\u200B\u202F\u205F]/g, ' ');
     // 行末の改行マーク（Word の ↵ が < などとして読まれたもの）
     L = L.replace(/[\s\u3000]*[<＜>＞↵⏎¶␊←]+[\s\u3000]*$/, '');
     // Word の下線・フィールドが _ として読まれたもの
@@ -2824,10 +2839,7 @@ async function readImage(file, onProgress){
     let text;
     if (rows.length){
       const all = rows.flatMap(r=>r.parts);
-      const ws = all.filter(i=>i.w > 0)
-        .map(i=>i.w / [...i.str].reduce((a,c)=>a + charWidth(c), 0))
-        .filter(v=>v > 0).sort((a,b)=>a-b);
-      const cw = ws.length ? ws[Math.floor(ws.length/2)] : 10;
+      const cw = estimateCharWidth(all);
       rows.sort((a,b)=>a.y0 - b.y0);
       text = rowsToText(rows, cw, Math.min(...all.map(i=>i.x)));
     } else {
@@ -2885,7 +2897,13 @@ function drawBatch(){
   if (!batch.length){ box.innerHTML = ''; return; }
   const good = batch.filter(b=>b.ok);
   const opts = genreOptions();
-  box.innerHTML = `<div class="secthead" style="margin-top:18px">読み取れたファイル ${good.length} / ${batch.length}</div>` +
+  const nEdited = good.filter(b=>b.edited).length;
+  box.innerHTML = `<div class="secthead" style="margin-top:18px">読み取れたファイル ${good.length} / ${batch.length}</div>
+    <div class="selbar" style="position:static;margin-bottom:10px">
+      <button class="mini" onclick="pickBatch('all')">すべて選ぶ</button>
+      <button class="mini" onclick="pickBatch('none')">すべて外す</button>
+      <button class="mini" onclick="pickBatch('edited')" ${nEdited?'':'disabled'}>直した曲だけ選ぶ${nEdited?`（${nEdited}）`:''}</button>
+    </div>` +
     batch.map((b,i)=>`<label class="brow${b.ok?'':' bad'}">
       ${b.ok?`<input type="checkbox" ${b.pick?'checked':''} onchange="batch[${i}].pick=this.checked;refreshCount()">`:'<span style="width:17px"></span>'}
       <span class="bn">${esc(b.title||b.name)}${b.edited?'<em class="edited">直した</em>':''}
@@ -2955,6 +2973,14 @@ function setBatchGenre(v){
   batch.forEach(b=>{ if (b.ok && b.pick) b.folder = g; });
   drawBatch();
   alertShare(`ジャンルを「${g}」にしました`);
+}
+
+function pickBatch(mode){
+  batch.forEach(b=>{
+    if (!b.ok) return;
+    b.pick = mode === 'all' ? true : mode === 'none' ? false : !!b.edited;
+  });
+  drawBatch();
 }
 
 function refreshCount(){
