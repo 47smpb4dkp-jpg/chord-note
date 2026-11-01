@@ -177,6 +177,25 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
 .mypk input{width:118px;padding:5px 9px;font-size:.8rem;border-radius:7px;
   font-family:var(--font-mono);background:var(--surface);color:var(--fg);border:1px solid var(--line)}
 
+/* 左右並び（広い画面）／上下（狭い画面） */
+.split{display:grid;grid-template-columns:1fr;gap:12px}
+@media (min-width:900px){ .split{grid-template-columns:1fr 1fr;align-items:start} }
+.split .card{margin-bottom:0;display:flex;flex-direction:column;min-width:0}
+.split textarea{min-height:52vh;max-height:68vh;margin:0}
+.split #editPrev,.split #bPrev{min-height:52vh;max-height:68vh;overflow-y:auto;
+  background:var(--surface-2);border:1px solid var(--line);border-radius:9px;padding:12px}
+
+/* 行ごとの切り替えボタン */
+.lntg{position:absolute;left:-30px;top:0;width:24px;height:1.5em;border-radius:6px;
+  font-size:.74rem;line-height:1;color:var(--fg-dim);border:1px solid transparent;
+  display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+.lntg:hover{border-color:var(--accent);color:var(--accent)}
+.lntg.on{color:var(--accent)}
+.lntg.hint{color:var(--accent);background:var(--accent-soft);border-color:var(--accent)}
+.lrow.withtg{position:relative}
+.lrow.withtg .lntg{position:absolute;left:-30px}
+#editPrev #sheet,#bPrev #sheet{padding-left:32px}
+
 /* 読み取り結果の見出し */
 .prevhead{display:flex;flex-wrap:wrap;gap:9px 20px;padding:11px 13px;margin-bottom:14px;
   background:var(--surface-2);border:1px solid var(--line);border-radius:9px}
@@ -526,6 +545,9 @@ function classify(raw){
   const s = normTok(raw);
   if (!s) return null;
   if (CHORD_RE.test(s)) return {kind:'c', text:s};
+  // 「D/」「D//」のように後ろにスラッシュだけ付くのは拍の印。コードとして読む
+  const bare = s.replace(/[\/|｜]+$/, '');
+  if (bare !== s && bare && CHORD_RE.test(bare)) return {kind:'c', text:bare, beat:true};
   if (/^[\/|｜]+$/.test(s)) return {kind:'b', text:s};
   if (/^[xX×]\s*\d+$/.test(s)||/^\d+\s*回$/.test(s)) return {kind:'s', text:s};
   for (const w of SECTIONS){
@@ -588,9 +610,16 @@ function lineKind(line){
   const toks = tokenize(line);
   if (!toks.length) return 'lyric';
   const cls = toks.map(t=>classify(t.raw));
-  if (cls.some(c=>!c||c.kind==='x')) return 'lyric';
-  if (cls.some(c=>c.kind==='c')) return 'chord';
-  if (cls.some(c=>c.kind==='s')) return 'section';
+  const bad = cls.filter(c=>!c || c.kind==='x');
+  if (!bad.length){
+    if (cls.some(c=>c.kind==='c')) return 'chord';
+    if (cls.some(c=>c.kind==='s')) return 'section';
+    return 'lyric';
+  }
+  // 読み違いが少し混ざっていても、大半がコードならコード行とみなす
+  const nc = cls.filter(c=>c && c.kind==='c').length;
+  const looksLyric = bad.some(c=>!c || /[ぁ-んァ-ヶ一-龠]/.test(c.text) || c.text.length > 6);
+  if (nc >= 2 && nc / cls.length >= 0.6 && !looksLyric) return 'chord';
   return 'lyric';
 }
 function isChordLine(line){ return lineKind(line) !== 'lyric'; }
@@ -649,24 +678,25 @@ function parseBody(text){
   const lines = String(text == null ? '' : text).replace(/\r\n/g,'\n').split('\n');
   const blocks = [];
   let cur = null;
-  for (const raw of lines){
+  for (let idx = 0; idx < lines.length; idx++){
+    const raw = lines[idx];
     if (!raw.trim()){
       if (cur){ blocks.push(cur); cur = null; }
-      blocks.push({blank:true});
+      blocks.push({blank:true, srcLine: idx});
       continue;
     }
     let line = raw, forced = false;
     if (/^[@＠]/.test(line)){ line = line.replace(/^[@＠]\s?/, ''); forced = true; }
     if (forced || isChordLine(line)){
       if (cur) blocks.push(cur);
-      cur = {forced, chords: tokenize(line).map(t=>{
+      cur = {forced, srcLine: idx, chords: tokenize(line).map(t=>{
         const c = classify(t.raw) || {kind:'x', text:t.raw};
-        // @ を付けた行では、コードとして読めない語も注記として残す
+        // コードとして読めない語は注記として残す（直す目印になる）
         return {...c, kind: (c.kind === 'x' ? 'n' : c.kind), col:t.col};
       }), lyrics:[]};
     } else {
-      if (cur) cur.lyrics.push(line);
-      else blocks.push({chords:[], lyrics:[line]});
+      if (cur) cur.lyrics.push({text:line, srcLine: idx});
+      else blocks.push({chords:[], lyrics:[{text:line, srcLine: idx}]});
     }
   }
   if (cur) blocks.push(cur);
@@ -1413,7 +1443,9 @@ function colToPx(lyric, col, font){
   return px;
 }
 
-function renderSheet(song){
+// opts.lineToggle を渡すと、各行の左に「コード行/歌詞行」の切り替えが出る
+function renderSheet(song, opts){
+  opts = opts || {};
   const blocks = parseBody(song.text);
   const n = song.transpose || 0;
   const el = document.createElement('div');
@@ -1435,7 +1467,10 @@ function renderSheet(song){
     if (b.chords.length){
       const row = document.createElement('div');
       row.className = 'crow';
-      const ref = b.lyrics[0] || '';
+      const ref = (b.lyrics[0] && b.lyrics[0].text) || '';
+      if (opts.lineToggle && b.srcLine != null){
+        row.appendChild(toggleBtn(b.srcLine, true, opts.lineToggle));
+      }
       for (const c of b.chords){
         const sp = document.createElement('span');
         sp.className = c.kind;
@@ -1450,12 +1485,39 @@ function renderSheet(song){
     for (const L of b.lyrics){
       const lr = document.createElement('div');
       lr.className = 'lrow';
-      lr.textContent = L;
+      if (opts.lineToggle && L.srcLine != null){
+        lr.classList.add('withtg');
+        lr.appendChild(toggleBtn(L.srcLine, false, opts.lineToggle, L.text));
+      }
+      const tx = document.createElement('span');
+      tx.textContent = L.text;
+      lr.appendChild(tx);
       blk.appendChild(lr);
     }
     el.appendChild(blk);
   }
   return el;
+}
+
+// 行の左に置く切り替えボタン。コードらしい行ほど目立たせる
+function toggleBtn(srcLine, isChord, cb, text){
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'lntg' + (isChord ? ' on' : (looksChordish(text) ? ' hint' : ''));
+  b.textContent = isChord ? '♪' : '＋';
+  b.title = isChord ? 'この行を歌詞に戻す' : 'この行をコード行にする';
+  b.setAttribute('aria-label', b.title);
+  b.onclick = (e)=>{ e.preventDefault(); e.stopPropagation(); cb(srcLine); };
+  return b;
+}
+// コードが混ざっていそうな行か（ボタンを目立たせる判断に使う）
+function looksChordish(text){
+  if (!text) return false;
+  if (/[ぁ-んァ-ヶ一-龠]/.test(text)) return false;
+  const toks = tokenize(text);
+  if (!toks.length) return false;
+  const nc = toks.filter(t=>{ const c = classify(t.raw); return c && c.kind === 'c'; }).length;
+  return nc >= 1;
 }
 
 /* ============ 7. 画面 ============ */
@@ -1527,15 +1589,18 @@ function render(){
       <div class="card">
         <label style="display:block;font-size:.74rem;font-weight:700;letter-spacing:.05em;color:var(--fg-dim);margin-bottom:6px">コードを入れる</label>
         <div class="picker cp" id="palette"></div>
-        <div class="field" style="margin:14px 0 0"><label for="eText">コード譜</label>
-          <textarea id="eText" style="min-height:300px" oninput="livePreview()">${esc(s.text||'')}</textarea></div>
-        <p class="hint">コード行はコードだけの行にします。コードとして読まれない行を無理にコード行にしたいときは、<b>行の先頭に @ を付けて</b>ください。<br>
-          空行はそのまま残るので、Aメロ・Bメロの区切りに使えます。</p>
       </div>
-      <div class="card">
-        <h2>表示の確認</h2>
-        <p class="sub">直した結果がここに出ます。</p>
-        <div id="editPrev"></div>
+      <div class="split">
+        <div class="card sp-a">
+          <h2>コード譜</h2>
+          <p class="sub">コードとして読まれない行は、右（下）の <b>＋</b> を押すとコード行になります。</p>
+          <textarea id="eText" oninput="livePreview()" onscroll="syncScroll('eText','editPrev')">${esc(s.text||'')}</textarea>
+        </div>
+        <div class="card sp-b">
+          <h2>表示の確認</h2>
+          <p class="sub"><b>♪</b> はコード行、<b>＋</b> は歌詞行。押すと入れ替わります。</p>
+          <div id="editPrev" onscroll="syncScroll('editPrev','eText')"></div>
+        </div>
       </div>
       <div class="card">
         <h2>この曲を削除</h2>
@@ -1800,14 +1865,17 @@ function render(){
             `<button class="pk sub" onclick="document.getElementById('bFolder').value='${esc(f)}'">${esc(f)}</button>`
           ).join('')}</div></div>
       </div>
-      <div class="card">
-        <div class="field" style="margin:0"><label for="bText">コード譜</label>
-          <p class="hint" style="margin:0 0 6px">コードとして読まれない行は、先頭に <b>@</b> を付けるとコード行になります。</p>
-          <textarea id="bText" style="min-height:280px" oninput="batchPreview()">${esc(b.text||'')}</textarea></div>
-      </div>
-      <div class="card">
-        <h2>表示の確認</h2>
-        <div id="bPrev"></div>
+      <div class="split">
+        <div class="card sp-a">
+          <h2>コード譜</h2>
+          <p class="sub">コードとして読まれない行は、右（下）の <b>＋</b> を押すとコード行になります。</p>
+          <textarea id="bText" oninput="batchPreview()" onscroll="syncScroll('bText','bPrev')">${esc(b.text||'')}</textarea>
+        </div>
+        <div class="card sp-b">
+          <h2>表示の確認</h2>
+          <p class="sub"><b>♪</b> はコード行、<b>＋</b> は歌詞行。押すと入れ替わります。</p>
+          <div id="bPrev" onscroll="syncScroll('bPrev','bText')"></div>
+        </div>
       </div>
       <div class="btnrow" style="margin-bottom:20px">
         <button class="act" onclick="closeBatchEdit(true)">直して一覧に戻る</button>
@@ -2077,8 +2145,37 @@ function livePreview(){
     key: document.getElementById('eKey').value || s.key,
     capo: +document.getElementById('eCapo').value || 0,
     barsPerLine: +document.getElementById('eBars').value || 8, transpose: 0};
+  const keep = box.scrollTop;
   box.innerHTML = '';
-  box.appendChild(renderSheet(tmp));
+  box.appendChild(renderSheet(tmp, {lineToggle: toggleLineAt}));
+  box.scrollTop = keep;
+}
+
+// その行をコード行にする／歌詞行に戻す（本文の先頭の @ を付け外しする）
+function toggleLineAt(i){
+  const ta = document.getElementById('eText') || document.getElementById('bText');
+  if (!ta) return;
+  const lines = ta.value.replace(/\r\n/g,'\n').split('\n');
+  if (i < 0 || i >= lines.length) return;
+  lines[i] = /^[@＠]/.test(lines[i])
+    ? lines[i].replace(/^[@＠]\s?/, '')
+    : '@' + lines[i];
+  ta.value = lines.join('\n');
+  ta.dispatchEvent(new Event('input', {bubbles:true}));
+}
+
+// 上下（または左右）のスクロールを合わせる
+let _syncing = false;
+function syncScroll(fromId, toId){
+  if (_syncing) return;
+  const a = document.getElementById(fromId), b = document.getElementById(toId);
+  if (!a || !b) return;
+  const ra = a.scrollHeight - a.clientHeight;
+  const rb = b.scrollHeight - b.clientHeight;
+  if (ra <= 0 || rb <= 0) return;
+  _syncing = true;
+  b.scrollTop = (a.scrollTop / ra) * rb;
+  requestAnimationFrame(()=>{ _syncing = false; });
 }
 
 function saveEdit(){
@@ -2525,7 +2622,7 @@ async function readPdf(file){
     }));
     pages.push(itemsToLines(items, 3));
   }
-  return pages.join('\n\n');
+  return fixOcrChords(pages.join('\n\n'));
 }
 
 // OCR の前に、背景色によらず「白地に黒文字」へ揃える
@@ -2562,6 +2659,37 @@ function normalizeImage(img){
   return cv;
 }
 
+// 読み取り結果のうち、コードらしい語だけ見た目の似た文字を直す
+const OCR_FIX = {
+  '0':'O', 'O':'0',      // 下で用途ごとに使い分ける
+};
+function fixOcrChords(text){
+  return text.split('\n').map(line=>{
+    // 日本語が混ざる行（歌詞）はさわらない
+    if (/[ぁ-んァ-ヶ一-龠]/.test(line)) return line;
+    return line.replace(/[^\s\u3000]+/g, tok=>{
+      let t = tok;
+      // ♭ と # の表記ゆれ
+      t = t.replace(/[♭Ь♮]/g, 'b').replace(/[♯＃]/g, '#');
+      // 先頭が音名に見えるときだけ直す
+      const m = t.match(/^([A-GＡ-Ｇa-g])(.*)$/);
+      if (!m) return tok;
+      let head = m[1].toUpperCase().normalize('NFKC');
+      let rest = m[2];
+      // 続きの部分でよくある取り違え
+      rest = rest
+        .replace(/^[lI|](?=$|[^0-9])/, '')      // 余分な縦棒
+        .replace(/l/g, '1').replace(/O/g, '0')  // 小文字l→1、O→0
+        .replace(/—|–|ー/g, '-')
+        .replace(/^rn/, 'm');                    // rn → m
+      const cand = head + rest;
+      // 直した結果がコードとして読めるときだけ採用する
+      const bare = cand.replace(/[\/|]+$/, '');
+      return CHORD_RE.test(bare) ? cand : tok;
+    });
+  }).join('\n');
+}
+
 async function readImage(file, onProgress){
   const T = await loadLib(
     'https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.1.0/tesseract.min.js', 'Tesseract');
@@ -2574,7 +2702,7 @@ async function readImage(file, onProgress){
   const cv = normalizeImage(img);
   URL.revokeObjectURL(img.src);
 
-  const worker = await T.createWorker('jpn', 1, {
+  const worker = await T.createWorker(['jpn','eng'], 1, {
     logger: m=>{
       if (onProgress && m.status === 'recognizing text')
         onProgress(Math.round(m.progress * 100));
@@ -2593,7 +2721,7 @@ async function readImage(file, onProgress){
       });
     });
     const text = items.length ? itemsToLines(items, 10) : (data.text || '');
-    return text;
+    return fixOcrChords(text);
   } finally { await worker.terminate(); }
 }
 
@@ -2695,9 +2823,12 @@ function batchPreview(){
   const box = document.getElementById('bPrev');
   if (!box) return;
   const g = id => { const el = document.getElementById(id); return el ? el.value : ''; };
+  const keep = box.scrollTop;
   box.innerHTML = '';
   box.appendChild(renderSheet({text:g('bText'), key:g('bKey'),
-    capo:parseInt(g('bCapo'),10)||0, transpose:0, bpm:100, barsPerLine:8}));
+    capo:parseInt(g('bCapo'),10)||0, transpose:0, bpm:100, barsPerLine:8},
+    {lineToggle: toggleLineAt}));
+  box.scrollTop = keep;
 }
 
 // 取り込む前に、選んだ曲のジャンルをまとめて変える
