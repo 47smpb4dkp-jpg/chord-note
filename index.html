@@ -550,6 +550,15 @@ function classify(raw){
   // 「D/」「D//」のように後ろにスラッシュだけ付くのは拍の印。コードとして読む
   const bare = s.replace(/[\/|｜]+$/, '');
   if (bare !== s && bare && CHORD_RE.test(bare)) return {kind:'c', text:bare, beat:true};
+  // 「ConG」「C(onG)」「Cオン G」のような オン表記 も分数コードとして読む
+  const onm = s.match(/^(.+?)[(（]?\s*(?:on|ON|On|oN|オン)\s*([A-G][#b]?)[)）]?$/);
+  if (onm){
+    const head = onm[1].replace(/[(（)）]/g, '').trim();
+    if (CHORD_RE.test(head)){
+      // 表示は元の書き方のまま、中身は分数コードとして扱う
+      return {kind:'c', text: head + '/' + onm[2], disp: raw.trim()};
+    }
+  }
   if (/^[\/|｜]+$/.test(s)) return {kind:'b', text:s};
   if (/^[xX×]\s*\d+$/.test(s)||/^\d+\s*回$/.test(s)) return {kind:'s', text:s};
   for (const w of SECTIONS){
@@ -581,7 +590,9 @@ function splitRunOn(tok){
 }
 
 function tokenize(line){
-  line = line.replace(/([(（][^)）]*[)）])/g,' $1 ');
+  // 括弧つきの演奏指示は切り離すが、「(onG)」はコードの一部なので残す
+  line = line.replace(/([(（][^)）]*[)）])/g, m=>
+    /^[(（]\s*(?:on|ON|On|oN|オン)\s*[A-G][#b♭♯]?\s*[)）]$/.test(m) ? m : ' ' + m + ' ');
   const toks=[]; let col=0, buf='', start=0, depth=0;
   for (const ch of line){
     if (ch==='('||ch==='（') depth++;
@@ -595,9 +606,21 @@ function tokenize(line){
     col+=charWidth(ch);
   }
   if (buf) toks.push({raw:buf,col:start});
+
+  // 「C on G」のように離れて書かれたオン表記を1つにまとめる
+  for (let i = 0; i < toks.length - 2; i++){
+    if (!/^(on|ON|On|oN|オン)$/.test(normTok(toks[i+1].raw))) continue;
+    const head = normTok(toks[i].raw).replace(/[(（)）]/g, '');
+    const bass = normTok(toks[i+2].raw).replace(/[)）]/g, '');
+    if (!CHORD_RE.test(head) || !/^[A-G][#b]?$/.test(bass)) continue;
+    const disp = toks[i].raw + ' ' + toks[i+1].raw + ' ' + toks[i+2].raw;
+    toks.splice(i, 3, {raw: disp, col: toks[i].col, joined: head + '/' + bass});
+  }
+
   // 連結コードを展開（位置はトークン内の表示幅で按分）
   const out = [];
   for (const t of toks){
+    if (t.joined){ out.push(t); continue; }
     if (classify(t.raw) && classify(t.raw).kind !== 'x'){ out.push(t); continue; }
     const parts = splitRunOn(t.raw);
     if (!parts){ out.push(t); continue; }
@@ -611,7 +634,7 @@ function tokenize(line){
 function lineKind(line){
   const toks = tokenize(line);
   if (!toks.length) return 'lyric';
-  const cls = toks.map(t=>classify(t.raw));
+  const cls = toks.map(t=>t.joined ? {kind:'c', text:t.joined} : classify(t.raw));
   const bad = cls.filter(c=>!c || c.kind==='x');
   if (!bad.length){
     if (cls.some(c=>c.kind==='c')) return 'chord';
@@ -692,7 +715,9 @@ function parseBody(text){
     if (forced || isChordLine(line)){
       if (cur) blocks.push(cur);
       cur = {forced, srcLine: idx, chords: tokenize(line).map(t=>{
-        const c = classify(t.raw) || {kind:'x', text:t.raw};
+        const c = t.joined
+          ? {kind:'c', text:t.joined, disp:t.raw.trim()}
+          : (classify(t.raw) || {kind:'x', text:t.raw});
         // コードとして読めない語は注記として残す（直す目印になる）
         return {...c, kind: (c.kind === 'x' ? 'n' : c.kind), col:t.col};
       }), lyrics:[]};
@@ -803,8 +828,11 @@ function shiftRoot(root,n){
 }
 function transposeChord(ch,n){
   if (!n) return ch;
-  return ch.replace(/^([A-G][#b]?)/, (m)=>shiftRoot(m,n))
-           .replace(/\/([A-G][#b]?)$/, (m,p1)=>'/'+shiftRoot(p1,n));
+  let out = ch.replace(/^([A-G][#b]?)/, (m)=>shiftRoot(m,n));
+  // 「/G」も「onG」も「on G」もベース音を動かす
+  out = out.replace(/(\/|\s*(?:on|ON|On|oN|オン)\s*)([A-G][#b]?)([)）]?)$/,
+    (m, sep, b, tail)=>sep + shiftRoot(b, n) + tail);
+  return out;
 }
 
 /* ============ 3. コードダイアグラム ============ */
@@ -1476,10 +1504,14 @@ function renderSheet(song, opts){
       for (const c of b.chords){
         const sp = document.createElement('span');
         sp.className = c.kind;
-        sp.textContent = c.kind==='c' ? transposeChord(c.text, n) : c.text;
+        const shown = c.kind==='c' ? transposeChord(c.disp || c.text, n) : c.text;
+        sp.textContent = shown;
         sp.style.left = colToPx(ref, c.col, c.kind==='c'?monoFont:font) + 'px';
-        if (c.kind==='c'){ sp.tabIndex=0; sp.onclick = ()=>showChord(sp.textContent);
-          sp.onkeydown = e=>{ if(e.key==='Enter') showChord(sp.textContent); }; }
+        if (c.kind==='c'){
+          // 押さえ方は分数コードの形で引く
+          const forLookup = transposeChord(c.text, n);
+          sp.tabIndex=0; sp.onclick = ()=>showChord(forLookup);
+          sp.onkeydown = e=>{ if(e.key==='Enter') showChord(forLookup); }; }
         row.appendChild(sp);
       }
       blk.appendChild(row);
@@ -1518,7 +1550,10 @@ function looksChordish(text){
   if (/[ぁ-んァ-ヶ一-龠]/.test(text)) return false;
   const toks = tokenize(text);
   if (!toks.length) return false;
-  const nc = toks.filter(t=>{ const c = classify(t.raw); return c && c.kind === 'c'; }).length;
+  const nc = toks.filter(t=>{
+    if (t.joined) return true;
+    const c = classify(t.raw); return c && c.kind === 'c';
+  }).length;
   return nc >= 1;
 }
 
@@ -2830,10 +2865,14 @@ async function takeFiles(fileList){
     if (!text.trim()){ out.push({name:f.name, folder, ok:false, why:'中身が読めない'}); continue; }
     const p = parseSheet(text);
     const nC = p.blocks.filter(b=>(b.chords||[]).length).length;
-    out.push({name:f.name, folder, ok:true, pick:true, text,
+    // 曲名やアーティストの行は欄に移し、本文には残さない
+    out.push({name:f.name, ok:true, pick:true,
+      text: p.body || text,
+      folder: p.folder || folder,
       title: p.title || f.name.replace(/\.[^.]+$/,''),
       artist: p.artist || '',
-      key: p.key, capo: p.capo, nChord:nC,
+      key: p.key, keyGuessed: !!p.keyGuessed, capo: p.capo || 0,
+      bpm: p.bpm || 100, nChord:nC,
       nLyric: p.blocks.reduce((a,b)=>a+((b.lyrics||[]).length),0)});
   }
   batch = out;
@@ -2850,7 +2889,8 @@ function drawBatch(){
     batch.map((b,i)=>`<label class="brow${b.ok?'':' bad'}">
       ${b.ok?`<input type="checkbox" ${b.pick?'checked':''} onchange="batch[${i}].pick=this.checked;refreshCount()">`:'<span style="width:17px"></span>'}
       <span class="bn">${esc(b.title||b.name)}${b.edited?'<em class="edited">直した</em>':''}
-        <div class="bf">${b.artist?esc(b.artist)+' · ':''}${esc(b.folder||'未分類')}${b.key?' · '+esc(b.key):''}</div></span>
+        <div class="bf">${b.artist?esc(b.artist)+' · ':''}${esc(b.folder||'未分類')}${
+          b.key?' · '+esc(b.key)+(b.keyGuessed?'(推測)':''):''}</div></span>
       <span class="bs${b.ok&&!b.nChord?' warn':''}">${b.ok
         ? (b.nChord ? `${b.nChord}行` : 'コード行なし')
         : esc(b.why)}</span>
@@ -2925,11 +2965,9 @@ function importBatch(){
   const take = batch.filter(b=>b.ok&&b.pick);
   if (!take.length) return;
   take.forEach((b,i)=>{
-    // 一覧で直したものは、その本文をそのまま使う
-    const body = b.edited ? b.text : (parseSheet(b.text).body || b.text);
     songs.push({id:'b'+Date.now()+'_'+i, folder:b.folder||'未分類', title:b.title,
       artist:b.artist||'', key:(b.key||'C').trim(), capo:b.capo||0,
-      bpm:100, barsPerLine:8, transpose:0, plays:0, v:2, text:body});
+      bpm:b.bpm||100, barsPerLine:8, transpose:0, plays:0, v:2, text:b.text});
   });
   persist();
   batch = []; batchEdit = null;
