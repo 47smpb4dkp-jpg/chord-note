@@ -12,6 +12,9 @@
 <link rel="apple-touch-icon" href="icon-180.png">
 <meta name="claude:viewport-fit-sides" content="cover">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700&family=Roboto+Mono:wght@400;500;700&display=swap">
 <style>
 :root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
@@ -157,6 +160,16 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
 .brow .bs{font-family:var(--font-mono);font-size:.7rem;color:var(--accent);white-space:nowrap}
 .brow.bad{opacity:.5}
 .brow.bad .bs{color:var(--fg-dim)}
+
+/* 同期バー */
+.syncbar{display:flex;align-items:center;gap:9px;flex-wrap:wrap;font-size:.76rem;color:var(--fg-dim);
+  background:var(--surface);border:1px solid var(--line);border-radius:9px;padding:8px 12px;margin-bottom:14px}
+.sdot{width:8px;height:8px;border-radius:50%;background:var(--fg-dim);flex:0 0 auto}
+.sdot.ok{background:#3f9e5a}
+.sdot.wait{background:var(--accent);animation:pulse 1.2s ease-in-out infinite}
+.sdot.err{background:#c0392b}
+.syncbar .who{margin-left:auto;font-size:.7rem;opacity:.75;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;max-width:48%}
 
 /* 解析結果のタイムライン */
 .tl{display:flex;flex-wrap:wrap;gap:5px}
@@ -679,64 +692,9 @@ function diagramSVG(frets){
 }
 
 /* ============ 4. サンプル曲 ============ */
-const SAMPLES = [
-{id:'frag', folder:'三叉路', fav:true, plays:12, title:'フラグメント', artist:'tommy', key:'D', capo:2, bpm:84, barsPerLine:8, text:
-`C   G   Em    Am    F   F    G    G
-
-C                G                F             C       Am      G        F       E
-ロマンティックな言葉の一つも 思いつかずにあなたは
-Am           G              F              C           Am          G              F              C
-全てがいやになったと泣いた もう 全てが嫌になったと泣いた
-
-そんなあなたの泣き顔を見て こんなに楽しいのにとつぶやく
-僕は夢を見ているようで こんなに楽しいのにとつぶやく
-
-間奏
-C   G   Em    Am    F   F    G    G
-
-サビ
-C  G   Em  Dm7
-あなたへの最後の言葉は 勇気がないから言えなかった`},
-
-{id:'shingo', folder:'オリジナル', plays:3, title:'しんごうきのうた〜１２３〜', artist:'混×××', key:'A', capo:0, bpm:120, barsPerLine:8, text:
-`作詞・作曲／混×××　編曲／混×××・川田雅之
-
-A                    D   D/B   E
-しんごうを　わたろう　赤青黄色
-しんごうを　わたろう　右見て左見て　１２３
-
-A              E              D            E
-赤しんごうは　いちごちゃん　いちごをたべてとまりましょう
-車がくるまで待っててね　青色になるまで待っててね
-
-F#m              C#m            D            E
-黄色のしんごうはくるま用　もうすぐ赤だよ止まりなさい
-バナナ色したしんごうは　もうすぐくるまが走ってくるよ`},
-
-{id:'akane', folder:'オリジナル', fav:true, plays:7, title:'あかね色', artist:'混×××', key:'G', capo:0, bpm:76, barsPerLine:8, text:
-`作詞・作曲／混×××
-イントロ G・Am・Bm・C
-
-G    Am     Bm     C      G      Am      Bm     C
-恋心を隠したまんまで　　引っ越すなんて寂しすぎるから
-G      Am      Bm     C  G     Am      Bm      C       D
-子供のころから２人で遊んだ　公園のベンチお別れをつげた
-
-C   Bm Am     G    F      Em    F      Em     E♭          D
-この街と君の思い出と　楽しかったことや悲しかったことが　あふれてこぼれ落ちる
-
-  G  Bm  C   G  Bm  C
- 君が大好き　　大好き　　　大好きだったよ　大好き
-  Am     Bm  C   Am     Bm     C
- かなわない恋心は　夕焼けのあかね色
-
-【間奏　Gm・F・E♭・Dm・Cm・Dm・E♭・Dsus4・D】
-
-  G  Bm  C   G  Bm  C
- 君が大好き　　大好き　　　大好きだったよ　大好き
-  Am     Bm  C   Am     Bm     C
- かなわない恋心は　夕焼けのあかね色`},
-];
+// 公開用のため、曲データは同梱していない。
+// 自分の曲は「新規登録」から取り込むか、書き出した .md を読み込むこと。
+const SAMPLES = [];
 
 /* ============ 4.5 音源の保管（IndexedDB） ============ */
 let _db = null;
@@ -770,9 +728,116 @@ async function delAudio(id){
   db.transaction('audio','readwrite').objectStore('audio').delete(id);
 }
 
+/* ============ 4.6 端末間の同期（Firebase） ============ */
+const FB_CONFIG = {
+  apiKey: "AIzaSyACg3AAcdPpZI2MmU43jC52NXv2ZxSlXe4",
+  authDomain: "chord-note-f916e.firebaseapp.com",
+  projectId: "chord-note-f916e",
+  storageBucket: "chord-note-f916e.firebasestorage.app",
+  messagingSenderId: "413476757789",
+  appId: "1:413476757789:web:075eb4cfaac9a25fd041f4"
+};
+
+let fb = null, fbUser = null, fbUnsub = null, syncState = 'off', pushTimer = null;
+
+function initSync(){
+  if (typeof firebase === 'undefined') { syncState = 'unavailable'; return; }
+  try{
+    firebase.initializeApp(FB_CONFIG);
+    fb = firebase.firestore();
+    // 圏外でも使えるように端末側にも持つ
+    fb.enablePersistence({synchronizeTabs:true}).catch(()=>{});
+    firebase.auth().onAuthStateChanged(u=>{
+      fbUser = u;
+      if (u) startSync(); else stopSync();
+      renderSyncBar();
+    });
+    firebase.auth().getRedirectResult().catch(()=>{});
+  }catch(e){ syncState = 'unavailable'; }
+}
+
+async function signIn(){
+  const provider = new firebase.auth.GoogleAuthProvider();
+  try{
+    await firebase.auth().signInWithPopup(provider);
+  }catch(e){
+    // iPad のホーム画面起動などポップアップが開けない場合
+    try{ await firebase.auth().signInWithRedirect(provider); }
+    catch(e2){ syncState = 'error'; renderSyncBar(); }
+  }
+}
+async function signOutSync(){ await firebase.auth().signOut(); }
+
+function songsCol(){ return fb.collection('users').doc(fbUser.uid).collection('songs'); }
+
+function startSync(){
+  if (!fb || !fbUser) return;
+  syncState = 'connecting';
+  renderSyncBar();
+  if (fbUnsub) fbUnsub();
+  fbUnsub = songsCol().onSnapshot(snap=>{
+    if (snap.metadata.hasPendingWrites) return;   // 自分が書いた分の返りは無視
+    const remote = snap.docs.map(d=>({...d.data(), id:d.id}));
+    if (!remote.length && songs.length){
+      pushAll();                                   // 初回: 手元の曲を上げる
+    } else {
+      songs = remote;
+      try{ localStorage.setItem('cn_songs', JSON.stringify(songs)); }catch(e){}
+    }
+    syncState = 'on';
+    renderSyncBar();
+    if (!openSong) render();
+  }, ()=>{ syncState = 'error'; renderSyncBar(); });
+}
+function stopSync(){
+  if (fbUnsub){ fbUnsub(); fbUnsub = null; }
+  syncState = 'off';
+}
+
+async function pushAll(){
+  if (!fb || !fbUser) return;
+  const batch = fb.batch();
+  songs.forEach(s=>{
+    const {id, ...rest} = s;
+    batch.set(songsCol().doc(id), rest, {merge:false});
+  });
+  try{ await batch.commit(); }catch(e){}
+}
+
+function schedulePush(){
+  if (!fb || !fbUser) return;
+  clearTimeout(pushTimer);
+  pushTimer = setTimeout(async ()=>{
+    try{
+      const snap = await songsCol().get();
+      const localIds = new Set(songs.map(x=>x.id));
+      const batch = fb.batch();
+      snap.docs.forEach(d=>{ if (!localIds.has(d.id)) batch.delete(d.ref); });
+      songs.forEach(s=>{ const {id, ...rest} = s; batch.set(songsCol().doc(id), rest, {merge:false}); });
+      await batch.commit();
+    }catch(e){}
+  }, 900);
+}
+
+function renderSyncBar(){
+  const el = document.getElementById('syncBar');
+  if (!el) return;
+  const label = {off:'同期していません', connecting:'接続中…', on:'同期中',
+    error:'同期できません', unavailable:'この環境では同期を使えません'}[syncState] || '';
+  if (syncState === 'unavailable'){ el.innerHTML = `<span class="sdot err"></span>${label}`; return; }
+  if (fbUser){
+    el.innerHTML = `<span class="sdot ${syncState==='on'?'ok':'wait'}"></span>${label}
+      <span class="who">${esc(fbUser.email||'')}</span>
+      <button class="mini" onclick="signOutSync()">やめる</button>`;
+  } else {
+    el.innerHTML = `<span class="sdot"></span>${label}
+      <button class="mini" onclick="signIn()">Google でログインして同期する</button>`;
+  }
+}
+
 /* ============ 5. 状態 ============ */
 let songs = SAMPLES.map(s=>({...s, transpose:0}));
-let playlist = ['akane','frag'];
+let playlist = [];
 let tab = 'list';
 let openSong = null;
 let scrolling = false, scrollTimer = null;
@@ -786,7 +851,10 @@ try{
   const saved = localStorage.getItem('cn_songs');
   if (saved){ const p = JSON.parse(saved); if (Array.isArray(p)&&p.length) songs = p; }
 }catch(e){}
-function persist(){ try{ localStorage.setItem('cn_songs', JSON.stringify(songs)); }catch(e){} }
+function persist(){
+  try{ localStorage.setItem('cn_songs', JSON.stringify(songs)); }catch(e){}
+  schedulePush();
+}
 
 /* ============ 6. 描画: コード譜 ============ */
 let measureCtx = null;
@@ -928,7 +996,18 @@ function render(){
     const often = songs.filter(x=>x.plays>0).sort((a,b)=>b.plays-a.plays).slice(0,12);
 
     const d = document.createElement('div');
-    let html = `<div class="picker" style="margin-bottom:14px">
+    const syncHtml = `<div class="syncbar" id="syncBar"></div>`;
+    if (!songs.length){
+      d.innerHTML = syncHtml + `<div class="card" style="text-align:center;padding:30px 20px">
+        <h2 style="margin-bottom:8px">まだ曲がありません</h2>
+        <p class="sub" style="margin-bottom:16px">「新規登録」から作るか、書き出しておいた .md を読み込んでください。</p>
+        <div class="btnrow" style="justify-content:center">
+          <button class="act" onclick="go('new')">曲を作る</button></div></div>`;
+      view.appendChild(d);
+      renderSyncBar();
+      return;
+    }
+    let html = syncHtml + `<div class="picker" style="margin-bottom:14px">
       <button class="pk${folderFilter===null?' on':''}" onclick="setFolder(null)">すべて<i>${songs.length}</i></button>
       <button class="pk${folderFilter==='fav'?' on':''}" onclick="setFolder('fav')">★ お気に入り<i>${favs.length}</i></button>
       <button class="pk${folderFilter==='often'?' on':''}" onclick="setFolder('often')">よく使う<i>${often.length}</i></button>
@@ -965,6 +1044,7 @@ function render(){
     }
     d.innerHTML = html;
     view.appendChild(d);
+    renderSyncBar();
   }
 
   if (tab==='pl'){
@@ -1516,6 +1596,8 @@ document.addEventListener('drop', async e=>{
   else acc.push(...e.dataTransfer.files);
   if (acc.length) takeFiles(acc);
 });
+
+initSync();
 
 // オフラインでも開けるようにする
 if ('serviceWorker' in navigator){
