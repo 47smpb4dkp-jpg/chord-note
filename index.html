@@ -114,18 +114,22 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
 #sheet{font-size:var(--sheet-size,16px)}
 .blk{margin-bottom:2px}
 .spacer{height:1.1em}
-.crow{position:relative;height:1.5em;margin-bottom:1px}
-.crow span{position:absolute;top:0;font-family:var(--font-mono);font-weight:700;color:var(--accent);
-  font-size:.92em;line-height:1.5;white-space:nowrap}
-.crow span.s{color:var(--teal);font-family:var(--font-ja);font-weight:700}
-.crow span.n{color:var(--note);font-family:var(--font-ja);font-weight:400;font-size:.8em}
-.crow span.b{color:var(--fg-dim)}
-.crow span.c{cursor:pointer;border-bottom:1px dotted transparent}
-.crow span.c:hover{border-bottom-color:var(--accent)}
-.lrow{line-height:1.5;white-space:pre;overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
-.lrow::-webkit-scrollbar{display:none}
-.bars{position:absolute;inset:0;pointer-events:none}
-.bars i{position:absolute;top:-2px;bottom:-2px;width:1px;background:var(--line)}
+/* コードと、その下の歌詞を1組にして並べる。狭いときは組ごと折り返す */
+.pairrow{display:block}
+.seg{display:inline-block;vertical-align:bottom;max-width:100%}
+.seg .sc{display:block;height:1.5em;line-height:1.5;white-space:nowrap;
+  font-family:var(--font-mono);font-weight:700;color:var(--accent);font-size:.92em}
+.seg .sc.s{color:var(--teal);font-family:var(--font-ja);font-weight:700}
+.seg .sc.n{color:var(--note);font-family:var(--font-ja);font-weight:400;font-size:.8em}
+.seg .sc.b{color:var(--fg-dim)}
+.seg .sc.c{cursor:pointer;border-bottom:1px dotted transparent}
+.seg .sc.c:hover{border-bottom-color:var(--accent)}
+/* 長い歌詞は、日本語の折り返しのきまりに従って自然な位置で改行する */
+.seg .sl{display:block;line-height:1.5;white-space:pre-wrap;
+  overflow-wrap:break-word;word-break:normal;line-break:strict}
+.lrow{line-height:1.5;white-space:pre-wrap;overflow-wrap:break-word;
+  word-break:normal;line-break:strict}
+.lrow.extra{opacity:.92}
 
 /* ダイアグラム */
 .dgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(104px,1fr));gap:12px}
@@ -196,8 +200,8 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
 .lntg:hover{border-color:var(--accent);color:var(--accent)}
 .lntg.on{color:var(--accent)}
 .lntg.hint{color:var(--accent);background:var(--accent-soft);border-color:var(--accent)}
-.lrow.withtg{position:relative}
-.lrow.withtg .lntg{position:absolute;left:-30px}
+.blk.withtg{position:relative}
+.blk.withtg .lntg{position:absolute;left:-30px;top:0}
 #editPrev #sheet,#bPrev #sheet{padding-left:32px}
 
 /* 読み取り結果の見出し */
@@ -226,7 +230,8 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
   border-radius:9px;padding:9px 11px;margin-bottom:14px;position:sticky;
   top:env(safe-area-inset-top,0px);z-index:5}
 
-.resetline{margin-top:26px;text-align:center}
+.tidylist{max-height:46vh;overflow-y:auto;margin-bottom:4px}
+.resetline{margin-top:26px;text-align:center;display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
 .resetline button{font-size:.74rem;color:var(--fg-dim);padding:6px 12px;border-radius:7px;
   border:1px solid transparent}
 .resetline button:hover{color:#c0392b;border-color:#c0392b}
@@ -1511,20 +1516,42 @@ function persist(){
 }
 
 /* ============ 6. 描画: コード譜 ============ */
-let measureCtx = null;
-function measure(text, font){
-  if (!measureCtx) measureCtx = document.createElement('canvas').getContext('2d');
-  measureCtx.font = font;
-  return measureCtx.measureText(text).width;
-}
-// 表示幅の列番号 → 歌詞内のピクセル位置（フォントに依存せず合う）
-function colToPx(lyric, col, font){
-  let w = 0, idx = 0;
-  const chars = [...lyric];
-  while (idx < chars.length && w < col){ w += charWidth(chars[idx]); idx++; }
-  let px = measure(chars.slice(0,idx).join(''), font);
-  if (w < col) px += (col - w) * measure('0', font);  // 歌詞より右に出る分
-  return px;
+// コード1つと、その下にくる歌詞の一部分を1組にする。
+// 組ごと折り返すので、画面が狭くてもコードと歌詞がずれない。
+function makeSegments(chords, lyricText){
+  const chars = [...(lyricText || '')];
+  // 表示幅の列番号 → 歌詞の何文字目か
+  const idxAt = col => {
+    let w = 0, i = 0;
+    while (i < chars.length && w < col){ w += charWidth(chars[i]); i++; }
+    return {i, w};
+  };
+  const segs = [];
+  const hasLyric = !!(lyricText || '').trim();
+  if (!chords.length) return [{chord:null, text: lyricText || ''}];
+
+  // 最初のコードより前にある歌詞
+  if (chords[0].col > 0){
+    const a = idxAt(chords[0].col);
+    if (a.i > 0) segs.push({chord:null, text: chars.slice(0, a.i).join('')});
+  }
+  for (let k = 0; k < chords.length; k++){
+    const here = idxAt(chords[k].col);
+    const last = k + 1 >= chords.length;
+    const nextCol = last ? null : chords[k+1].col;
+    const to = last ? chars.length : idxAt(nextCol).i;
+    let text = chars.slice(here.i, to).join('');
+    // 次のコードまでの間隔を空白で埋める。
+    // ただし空白が長すぎると1行が横に伸びるので、上限を設ける
+    if (!last){
+      const want = Math.min(nextCol - chords[k].col, hasLyric ? 4 : 8);
+      let have = 0;
+      for (const c of text) have += charWidth(c);
+      if (have < want) text += ' '.repeat(want - have);
+    }
+    segs.push({chord: chords[k], text});
+  }
+  return segs;
 }
 
 // opts.lineToggle を渡すと、各行の左に「コード行/歌詞行」の切り替えが出る
@@ -1534,10 +1561,7 @@ function renderSheet(song, opts){
   const n = song.transpose || 0;
   const el = document.createElement('div');
   el.id = 'sheet';
-  const size = song.sheetSize || 16;
-  el.style.setProperty('--sheet-size', size+'px');
-  const font = `${size}px "Zen Kaku Gothic New", sans-serif`;
-  const monoFont = `700 ${size*0.92}px "Roboto Mono", monospace`;
+  el.style.setProperty('--sheet-size', (song.sheetSize || 16) + 'px');
 
   for (const b of blocks){
     if (b.blank){
@@ -1548,39 +1572,58 @@ function renderSheet(song, opts){
     }
     const blk = document.createElement('div');
     blk.className = 'blk';
+    if (opts.lineToggle){
+      blk.classList.add('withtg');
+      const line = b.chords.length ? b.srcLine
+                 : (b.lyrics[0] && b.lyrics[0].srcLine);
+      if (line != null){
+        blk.appendChild(toggleBtn(line, b.chords.length > 0, opts.lineToggle,
+          b.chords.length ? '' : (b.lyrics[0] && b.lyrics[0].text)));
+      }
+    }
+
     if (b.chords.length){
       const row = document.createElement('div');
-      row.className = 'crow';
-      const ref = (b.lyrics[0] && b.lyrics[0].text) || '';
-      if (opts.lineToggle && b.srcLine != null){
-        row.appendChild(toggleBtn(b.srcLine, true, opts.lineToggle));
-      }
-      for (const c of b.chords){
-        const sp = document.createElement('span');
-        sp.className = c.kind;
-        const shown = c.kind==='c' ? transposeChord(c.disp || c.text, n) : c.text;
-        sp.textContent = shown;
-        sp.style.left = colToPx(ref, c.col, c.kind==='c'?monoFont:font) + 'px';
-        if (c.kind==='c'){
-          // 押さえ方は分数コードの形で引く
-          const forLookup = transposeChord(c.text, n);
-          sp.tabIndex=0; sp.onclick = ()=>showChord(forLookup);
-          sp.onkeydown = e=>{ if(e.key==='Enter') showChord(forLookup); }; }
-        row.appendChild(sp);
+      row.className = 'pairrow';
+      const first = (b.lyrics[0] && b.lyrics[0].text) || '';
+      for (const sg of makeSegments(b.chords, first)){
+        const seg = document.createElement('span');
+        seg.className = 'seg';
+        const top = document.createElement('span');
+        top.className = 'sc';
+        if (sg.chord){
+          const c = sg.chord;
+          top.classList.add(c.kind);
+          top.textContent = c.kind === 'c' ? transposeChord(c.disp || c.text, n) : c.text;
+          if (c.kind === 'c'){
+            const forLookup = transposeChord(c.text, n);
+            top.tabIndex = 0;
+            top.onclick = ()=>showChord(forLookup);
+            top.onkeydown = e=>{ if (e.key === 'Enter') showChord(forLookup); };
+          }
+        }
+        const bot = document.createElement('span');
+        bot.className = 'sl';
+        bot.textContent = sg.text;
+        seg.appendChild(top);
+        seg.appendChild(bot);
+        row.appendChild(seg);
       }
       blk.appendChild(row);
-    }
-    for (const L of b.lyrics){
-      const lr = document.createElement('div');
-      lr.className = 'lrow';
-      if (opts.lineToggle && L.srcLine != null){
-        lr.classList.add('withtg');
-        lr.appendChild(toggleBtn(L.srcLine, false, opts.lineToggle, L.text));
+      // 2行目以降の歌詞（同じコードで歌う替わりの歌詞）
+      for (let i = 1; i < b.lyrics.length; i++){
+        const lr = document.createElement('div');
+        lr.className = 'lrow extra';
+        lr.textContent = b.lyrics[i].text;
+        blk.appendChild(lr);
       }
-      const tx = document.createElement('span');
-      tx.textContent = L.text;
-      lr.appendChild(tx);
-      blk.appendChild(lr);
+    } else {
+      for (const L of b.lyrics){
+        const lr = document.createElement('div');
+        lr.className = 'lrow';
+        lr.textContent = L.text;
+        blk.appendChild(lr);
+      }
     }
     el.appendChild(blk);
   }
@@ -1848,6 +1891,7 @@ function render(){
     }
     if (!isViewer && !selectMode && songs.length){
       html += `<div class="resetline">
+        <button onclick="openTidy()">読み込み済みの曲を整理し直す</button>
         <button onclick="askResetAll()">すべての曲を消す</button></div>`;
     }
     d.innerHTML = html;
@@ -2028,22 +2072,22 @@ function render(){
           <button class="ghost" onclick="document.getElementById('pickOne').click()">ファイルを1つ読み込む</button>
           <button class="act" onclick="saveDraft()">保存する</button>
         </div>
-        <input type="file" id="pickOne" accept=".md,.txt,.docx,.pdf,.jpg,.jpeg,.png,.gif,.bmp,.webp" hidden onchange="if(this.files[0])loadOne(this.files[0])">
+        <input type="file" id="pickOne" accept=".md,.txt,.doc,.docx,.pdf,.jpg,.jpeg,.png,.gif,.bmp,.webp" hidden onchange="if(this.files[0])loadOne(this.files[0])">
         <div id="draftStat"></div>
       </div>
       <div class="card">
         <h2>フォルダから一括読み込み</h2>
         <p class="sub">コード譜を入れてあるフォルダを丸ごと選ぶと、中のファイルをまとめて読み取ります。フォルダ名はジャンルとして引き継ぎます。あとでまとめて変えられます。</p>
         <div class="drop" id="dropZone">
-          <p>ここにファイルやフォルダをドラッグ<br><span style="font-size:.74rem">.md / .txt / .docx / .pdf / 画像</span></p>
+          <p>ここにファイルやフォルダをドラッグ<br><span style="font-size:.74rem">.md / .txt / .doc / .docx / .pdf / 画像</span></p>
           <div class="btnrow" style="justify-content:center">
             <button class="ghost" onclick="document.getElementById('pickDir').click()">フォルダを選ぶ</button>
             <button class="ghost" onclick="document.getElementById('pickFiles').click()">ファイルを選ぶ</button>
           </div>
         </div>
         <input type="file" id="pickDir" webkitdirectory directory multiple hidden onchange="takeFiles(this.files)">
-        <input type="file" id="pickFiles" multiple hidden accept=".md,.txt,.docx,.pdf,.jpg,.jpeg,.png,.gif,.bmp,.webp" onchange="takeFiles(this.files)">
-        <p class="hint">読めるのは .md / .txt / .docx / .pdf と画像です。1曲だけ中身を見ながら直したいときは、上の「ファイルから作る」の「ファイルを1つ読み込む」を使ってください。<br>
+        <input type="file" id="pickFiles" multiple hidden accept=".md,.txt,.doc,.docx,.pdf,.jpg,.jpeg,.png,.gif,.bmp,.webp" onchange="takeFiles(this.files)">
+        <p class="hint">読めるのは .md / .txt / .doc / .docx / .pdf と画像です。1曲だけ中身を見ながら直したいときは、上の「ファイルから作る」の「ファイルを1つ読み込む」を使ってください。<br>
           画像からの読み取りは間違いが混ざります。読み込んだあと必ず確認してください。</p>
         <div id="batchOut"></div>
       </div>
@@ -2407,6 +2451,75 @@ function addSelectedToPlaylist(){
   choosePlaylist([...selected]);
 }
 
+/* ---- 読み込み済みの曲を整理し直す ---- */
+let tidyRekey = false;
+
+// 何が変わるかを先に出す（まだ保存はしない）
+function tidyPlan(){
+  const out = [];
+  songs.forEach(s=>{
+    const p = parseSheet(s.text || '');
+    const next = {...s}, why = [];
+    if (p.body && p.body !== s.text){
+      next.text = p.body;
+      const before = (s.text||'').split('\n').length;
+      const after  = p.body.split('\n').length;
+      why.push('本文から曲情報の行を外す（' + before + '行 → ' + after + '行）');
+    }
+    if (!s.artist && p.artist){ next.artist = p.artist; why.push('アーティスト: ' + p.artist); }
+    if (!s.capo && p.capo){ next.capo = p.capo; why.push('カポ: ' + p.capo); }
+    if (!s.bpm && p.bpm){ next.bpm = p.bpm; why.push('テンポ: ' + p.bpm); }
+    if (!s.key && p.key){ next.key = p.key; why.push('キー: ' + p.key); }
+    else if (tidyRekey && p.key && p.key !== s.key){
+      next.key = p.key;
+      why.push('キー: ' + (s.key||'—') + ' → ' + p.key + (p.keyGuessed ? '（推測）' : ''));
+    }
+    if (why.length) out.push({id:s.id, title:s.title, next, why});
+  });
+  return out;
+}
+
+function openTidy(){
+  if (isViewer) return;
+  const plan = tidyPlan();
+  document.getElementById('popName').textContent = '読み込み済みの曲を整理する';
+  document.getElementById('popDesc').textContent =
+    plan.length ? `${plan.length} 曲に変更があります。` : '変更が必要な曲はありません。';
+  document.getElementById('popGrid').innerHTML = `<div style="flex:1 1 100%">
+    <label class="brow" style="margin-bottom:12px">
+      <input type="checkbox" ${tidyRekey?'checked':''} onchange="tidyRekey=this.checked;openTidy()">
+      <span class="bn">キーも推測し直す
+        <div class="bf">自分で設定したキーも、譜面のコードから付け直します</div></span>
+    </label>
+    ${plan.length ? `<div class="tidylist">` + plan.map(x=>`
+        <div class="shrow" style="display:block">
+          <b style="font-size:.86rem">${esc(x.title || '(曲名なし)')}</b>
+          <div class="sf" style="margin-top:3px">${x.why.map(esc).join('<br>')}</div>
+        </div>`).join('') + `</div>` : ''}
+    <div class="btnrow" style="margin-top:12px">
+      ${plan.length ? '<button class="act" onclick="applyTidy()">整理する</button>' : ''}
+      <button class="ghost" onclick="closePop()">${plan.length?'やめる':'閉じる'}</button>
+    </div>
+    <p class="hint">元に戻せません。心配なら先に書き出してください。<br>
+      古い読み取りで行が崩れている曲は、これでは直りません。元のファイルから取り込み直してください。</p>
+  </div>`;
+  document.getElementById('pop').hidden = false;
+}
+
+function applyTidy(){
+  const plan = tidyPlan();
+  if (!plan.length) return;
+  const byId = new Map(plan.map(x=>[x.id, x.next]));
+  songs = songs.map(s=>{
+    const n = byId.get(s.id);
+    return n ? {...n, v:2} : s;
+  });
+  persist();
+  closePop();
+  render();
+  alertShare(`${plan.length} 曲を整理しました`);
+}
+
 /* ---- 全部消す ---- */
 function askResetAll(){
   document.getElementById('popName').textContent = 'すべての曲を消します';
@@ -2661,246 +2774,169 @@ function readText(file){
     r.readAsText(file, 'utf-8');
   });
 }
+/* ---- 旧 Word（.doc / OLE2 複合文書）---- */
+function readDocBuffer(arrayBuffer){
+  const u8 = new Uint8Array(arrayBuffer);
+  if (u8.length < 512) throw new Error('ファイルが小さすぎます');
+  const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+  // OLE2 の目印
+  if (dv.getUint32(0, true) !== 0xE011CFD0 || dv.getUint32(4, true) !== 0xE11AB1A1)
+    throw new Error('古い Word 形式ではありません');
+
+  const sect = 1 << dv.getUint16(30, true);
+  const dirStart = dv.getUint32(48, true);
+  const fatCount = dv.getUint32(44, true);
+
+  // FAT（セクタのつながり表）を組み立てる
+  const fat = [];
+  for (let i = 0; i < Math.min(fatCount, 109); i++){
+    const sc = dv.getUint32(76 + i * 4, true);
+    if (sc === 0xFFFFFFFF) break;
+    const off = (sc + 1) * sect;
+    if (off + sect > u8.length) break;
+    for (let j = 0; j < sect; j += 4) fat.push(dv.getUint32(off + j, true));
+  }
+  const chain = s=>{
+    const out = []; let c = s, g = 0;
+    while (c !== 0xFFFFFFFE && c < fat.length && g++ < 200000){ out.push(c); c = fat[c]; }
+    return out;
+  };
+
+  // ディレクトリから WordDocument を探す
+  let wd = null;
+  for (const sc of chain(dirStart)){
+    const base = (sc + 1) * sect;
+    for (let k = 0; k + 128 <= sect; k += 128){
+      const o = base + k;
+      if (o + 128 > u8.length) break;
+      const nlen = dv.getUint16(o + 64, true);
+      if (nlen < 2) continue;
+      let name = '';
+      for (let i = 0; i < nlen - 2; i += 2) name += String.fromCharCode(dv.getUint16(o + i, true));
+      if (name === 'WordDocument'){
+        wd = {start: dv.getUint32(o + 116, true), size: dv.getUint32(o + 120, true)};
+      }
+    }
+    if (wd) break;
+  }
+  if (!wd || !wd.size) throw new Error('本文が見つかりません');
+
+  // ストリームを連結
+  const bytes = new Uint8Array(wd.size);
+  let p = 0;
+  for (const sc of chain(wd.start)){
+    const off = (sc + 1) * sect;
+    const n = Math.min(sect, wd.size - p);
+    if (n <= 0) break;
+    if (off + n > u8.length) break;
+    bytes.set(u8.subarray(off, off + n), p);
+    p += n;
+  }
+  const d2 = new DataView(bytes.buffer);
+  const fcMin = d2.getUint32(24, true);
+  const fcMac = d2.getUint32(28, true);
+  const len = fcMac - fcMin;
+  if (!(len > 0) || fcMin >= bytes.length) throw new Error('本文の位置を読めません');
+
+  const tidy = t => t
+    .replace(/[\r\x07\x0B\x0C]/g, '\n')
+    .replace(/[\x00-\x08\x0E-\x1F]/g, '')
+    .replace(/\u0013[^\u0014\u0015]*\u0014?/g, '')   // フィールドの指示部分
+    .replace(/[\u0013\u0014\u0015]/g, '')
+    .replace(/\n{3,}/g, '\n\n');
+  // 文字化けは英数字だらけになるので、日本語の字を重く見る
+  const score = t => {
+    const cjk = (t.match(/[ぁ-んァ-ヶ一-龠ー、。]/g) || []).length;
+    const lat = (t.match(/[A-Za-z]/g) || []).length;
+    const bad = (t.match(/[\uFFFD\u0000-\u0008]/g) || []).length;
+    return cjk * 4 + lat - bad * 6;
+  };
+
+  // 2バイト（UTF-16LE）として読む
+  let a = '';
+  for (let i = fcMin; i + 1 < Math.min(fcMin + len * 2, bytes.length); i += 2){
+    const c = bytes[i] | (bytes[i+1] << 8);
+    if (c === 9) a += '\t'; else if (c >= 10) a += String.fromCharCode(c);
+  }
+  a = tidy(a);
+
+  // 1バイト（Shift-JIS）として読む
+  let b = '';
+  try{
+    const slice = bytes.subarray(fcMin, Math.min(fcMin + len, bytes.length));
+    b = tidy(new TextDecoder('shift-jis', {fatal:false}).decode(slice));
+  }catch(e){ b = ''; }
+
+  const best = score(a) >= score(b) ? a : b;
+  if (!score(best)) throw new Error('文字を取り出せませんでした');
+  return best;
+}
+
+async function readDoc(file){
+  return readDocBuffer(await file.arrayBuffer());
+}
+
+// 中身が旧 Word 形式かどうか（拡張子があてにならないので先頭を見る）
+async function isOle2(file){
+  try{
+    const head = new Uint8Array(await file.slice(0, 8).arrayBuffer());
+    return head[0]===0xD0 && head[1]===0xCF && head[2]===0x11 && head[3]===0xE0;
+  }catch(e){ return false; }
+}
+
+// XML の実体参照をもとの文字に戻す
+function xmlUnescape(t){
+  return t.replace(/&#x([0-9a-fA-F]+);/g, (m,h)=>String.fromCodePoint(parseInt(h,16)))
+          .replace(/&#(\d+);/g, (m,d)=>String.fromCodePoint(+d))
+          .replace(/&lt;/g,'<').replace(/&gt;/g,'>')
+          .replace(/&quot;/g,'"').replace(/&apos;/g,"'")
+          .replace(/&amp;/g,'&');
+}
+
 // .docx は ZIP を展開して word/document.xml から段落を取り出す
 async function readDocx(file){
-  if (typeof JSZip === 'undefined') return '';
-  try{
-    const zip = await JSZip.loadAsync(file);
-    const xml = await zip.file('word/document.xml').async('string');
-    const paras = xml.match(/<w:p[ >][\s\S]*?<\/w:p>/g) || [];
-    return paras.map(pa=>{
-      const t = pa.match(/<w:t[^>]*>([\s\S]*?)<\/w:t>/g) || [];
-      return t.map(x=>x.replace(/<[^>]+>/g,'')).join('')
-              .replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>');
-    }).join('\n');
-  }catch(e){ return ''; }
-}
+  if (typeof JSZip === 'undefined') throw new Error('展開の準備ができていません');
+  let zip;
+  try{ zip = await JSZip.loadAsync(file); }
+  catch(e){ throw new Error('ZIP として開けません（古い .doc 形式かもしれません）'); }
 
-/* ---- PDF / 画像からの読み取り ---- */
-const _loaded = {};
-function loadLib(url, globalName){
-  if (_loaded[url]) return _loaded[url];
-  _loaded[url] = new Promise((res, rej)=>{
-    if (globalName && window[globalName]) return res(window[globalName]);
-    const sc = document.createElement('script');
-    sc.src = url;
-    sc.onload = ()=>res(globalName ? window[globalName] : true);
-    sc.onerror = ()=>rej(new Error('読み込めませんでした: ' + url));
-    document.head.appendChild(sc);
-  });
-  return _loaded[url];
-}
-
-// 文字の並びを、横位置を保ったままテキストの行に戻す
-// items: {str, x, y0, y1, w}
-function itemsToLines(items){
-  const src = items.filter(i=>i.str && i.str.trim());
-  if (!src.length) return '';
-
-  const cw = estimateCharWidth(src);
-
-  // 縦の範囲が重なっていれば同じ行とみなす（小書き文字や伸ばし棒が分かれないように）
-  const rows = [];
-  [...src].sort((a,b)=>a.y0 - b.y0).forEach(it=>{
-    const h = Math.max(1, it.y1 - it.y0);
-    const row = rows.find(r=>{
-      const ov = Math.min(r.y1, it.y1) - Math.max(r.y0, it.y0);
-      const rh = Math.max(1, r.y1 - r.y0);
-      return ov > 0.34 * Math.min(h, rh);
-    });
-    if (row){
-      row.parts.push(it);
-      row.y0 = Math.min(row.y0, it.y0);
-      row.y1 = Math.max(row.y1, it.y1);
-    } else {
-      rows.push({y0: it.y0, y1: it.y1, parts: [it]});
-    }
-  });
-  rows.sort((a,b)=>a.y0 - b.y0);
-  return rowsToText(rows, cw, Math.min(...src.map(i=>i.x)));
-}
-
-function rowsToText(rows, cw, minX){
-  return rows.map(r=>{
-    r.parts.sort((a,b)=>a.x - b.x);
-    let line = '', col = 0;
-    r.parts.forEach(pt=>{
-      let target = Math.round((pt.x - minX) / cw);
-      // 読み取りのずれで極端に離れた位置になることがあるので、間隔に上限を設ける
-      if (target - col > 40) target = col + 40;
-      while (col < target){ line += ' '; col++; }
-      line += pt.str;
-      for (const c of pt.str) col += charWidth(c);
-    });
-    return line.replace(/\s+$/,'');
-  }).join('\n');
-}
-
-// 1文字（半角1つ分）の幅を見積もる。
-// 日本語は字幅が揃っているので、そちらを優先して使う
-function estimateCharWidth(items){
-  const per = it => it.w / [...it.str].reduce((a,c)=>a + charWidth(c), 0);
-  const med = arr => arr.length ? [...arr].sort((a,b)=>a-b)[Math.floor(arr.length/2)] : 0;
-  const cjk = items.filter(i=>i.w > 0 && /[ぁ-んァ-ヶ一-龠]/.test(i.str)).map(per).filter(v=>v > 0);
-  if (cjk.length >= 3) return med(cjk);
-  const all = items.filter(i=>i.w > 0).map(per).filter(v=>v > 0);
-  return med(all) || 6;
-}
-
-async function readPdf(file){
-  const pdfjs = await loadLib(
-    'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js', 'pdfjsLib');
-  pdfjs.GlobalWorkerOptions.workerSrc =
-    'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-  const buf = await file.arrayBuffer();
-  const doc = await pdfjs.getDocument({data: buf}).promise;
-  const pages = [];
-  for (let n = 1; n <= doc.numPages; n++){
-    const page = await doc.getPage(n);
-    const tc = await page.getTextContent();
-    const items = tc.items.map(it=>{
-      const h = it.height || Math.abs(it.transform[3]) || 10;
-      const top = -it.transform[5] - h;
-      return {str: it.str, x: it.transform[4], y0: top, y1: top + h, w: it.width};
-    });
-    pages.push(itemsToLines(items));
+  // 本体の場所は決め打ちにせず、word/ の中から探す
+  let entry = zip.file('word/document.xml');
+  if (!entry){
+    const cand = Object.keys(zip.files)
+      .filter(n=>/^word\/document\d*\.xml$/i.test(n) || /document\.xml$/i.test(n));
+    if (cand.length) entry = zip.file(cand[0]);
   }
-  return fixOcrChords(cleanOcrArtifacts(pages.join('\n\n')));
-}
+  if (!entry) throw new Error('本文（document.xml）が見つかりません');
+  const xml = await entry.async('string');
 
-// OCR の前に、背景色によらず「白地に黒文字」へ揃える
-function normalizeImage(img){
-  const cv = document.createElement('canvas');
-  const scale = Math.min(2200 / img.width, 3);
-  cv.width = Math.round(img.width * (scale > 1 ? scale : 1));
-  cv.height = Math.round(img.height * (scale > 1 ? scale : 1));
-  const cx = cv.getContext('2d');
-  cx.drawImage(img, 0, 0, cv.width, cv.height);
-  const d = cx.getImageData(0, 0, cv.width, cv.height);
-  const px = d.data;
-
-  // 四隅と外周から背景の明るさを測る
-  let sum = 0, n = 0;
-  const step = Math.max(1, Math.floor(cv.width / 60));
-  for (let x = 0; x < cv.width; x += step){
-    for (const y of [0, cv.height - 1]){
-      const i = (y * cv.width + x) * 4;
-      sum += (px[i] * 0.299 + px[i+1] * 0.587 + px[i+2] * 0.114); n++;
-    }
+  // <w:p/> のように中身が空の段落もあるので、開始位置で区切る
+  const out = [];
+  const re = /<w:p(\s[^>]*)?>/g;
+  const pieces = [];
+  let m;
+  while ((m = re.exec(xml)) !== null){
+    // <w:p ... /> は中身のない段落（＝空行）
+    if ((m[1] || '').endsWith('/')){ pieces.push({self:true}); continue; }
+    const end = xml.indexOf('</w:p>', re.lastIndex);
+    pieces.push({self:false, body: end < 0 ? '' : xml.slice(re.lastIndex, end)});
+    if (end >= 0) re.lastIndex = end + 6;
   }
-  const bg = n ? sum / n : 255;
-  const dark = bg < 128;
-
-  for (let i = 0; i < px.length; i += 4){
-    let v = px[i] * 0.299 + px[i+1] * 0.587 + px[i+2] * 0.114;
-    if (dark) v = 255 - v;                 // 暗い背景なら反転
-    v = v > 150 ? 255 : (v < 90 ? 0 : v);  // 中間を締める
-    px[i] = px[i+1] = px[i+2] = v;
-    px[i+3] = 255;
+  for (const pc of pieces){
+    if (pc.self){ out.push(''); continue; }
+    let line = '';
+    // 文字・タブ・改行を、書かれている順に組み立てる
+    const tre = /<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>|<w:tab\s*\/?>|<w:br\s*\/?>|<w:cr\s*\/?>/g;
+    let t;
+    while ((t = tre.exec(pc.body)) !== null){
+      if (t[1] !== undefined) line += xmlUnescape(t[1]);
+      else if (/^<w:tab/.test(t[0])) line += '\t';
+      else line += '\n';
+    }
+    out.push(line);
   }
-  cx.putImageData(d, 0, 0);
-  return cv;
-}
-
-// Word の編集記号やページの飾りなど、譜面と関係のないものを取り除く
-function cleanOcrArtifacts(text){
-  const lines = text.replace(/\r\n/g,'\n').split('\n').map(line=>{
-    // 読み取りで混ざる空白の種類を、半角空白に揃える
-    let L = line.replace(/[\u00A0\u2000-\u200B\u202F\u205F]/g, ' ');
-    // 行末の改行マーク（Word の ↵ が < などとして読まれたもの）
-    L = L.replace(/[\s\u3000]*[<＜>＞↵⏎¶␊←]+[\s\u3000]*$/, '');
-    // Word の下線・フィールドが _ として読まれたもの
-    L = L.replace(/_{1,}/g, ' ');
-    // ページの隅の飾りだけの行
-    if (/^[\s\u3000]*[「」『』⌐¬гΓ|｜丁L][\s\u3000]*$/.test(L)) L = '';
-    return L.replace(/[\s\u3000]+$/, '');
-  });
-  // 文字が1つも無い行（記号だけの行）は空行にする
-  const hasContent = L => /[A-Za-zＡ-Ｚａ-ｚ0-9０-９ぁ-んァ-ヶ一-龠]/.test(L);
-  return lines.map(L=>hasContent(L) ? L : '').join('\n')
-    // 3行以上の空行は2行にまとめる
-    .replace(/\n{3,}/g, '\n\n');
-}
-
-// 読み取り結果のうち、コードらしい語だけ見た目の似た文字を直す
-const OCR_FIX = {
-  '0':'O', 'O':'0',      // 下で用途ごとに使い分ける
-};
-function fixOcrChords(text){
-  return text.split('\n').map(line=>{
-    // 日本語が混ざる行（歌詞）はさわらない
-    if (/[ぁ-んァ-ヶ一-龠]/.test(line)) return line;
-    return line.replace(/[^\s\u3000]+/g, tok=>{
-      let t = tok;
-      // ♭ と # の表記ゆれ
-      t = t.replace(/[♭Ь♮]/g, 'b').replace(/[♯＃]/g, '#');
-      // 先頭が音名に見えるときだけ直す
-      const m = t.match(/^([A-GＡ-Ｇa-g])(.*)$/);
-      if (!m) return tok;
-      let head = m[1].toUpperCase().normalize('NFKC');
-      let rest = m[2];
-      // 続きの部分でよくある取り違え
-      rest = rest
-        .replace(/^[lI|](?=$|[^0-9])/, '')      // 余分な縦棒
-        .replace(/l/g, '1').replace(/O/g, '0')  // 小文字l→1、O→0
-        .replace(/—|–|ー/g, '-')
-        .replace(/^rn/, 'm');                    // rn → m
-      const cand = head + rest;
-      // 直した結果がコードとして読めるときだけ採用する
-      const bare = cand.replace(/[\/|]+$/, '');
-      return CHORD_RE.test(bare) ? cand : tok;
-    });
-  }).join('\n');
-}
-
-async function readImage(file, onProgress){
-  const T = await loadLib(
-    'https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.1.0/tesseract.min.js', 'Tesseract');
-  const img = await new Promise((res, rej)=>{
-    const im = new Image();
-    im.onload = ()=>res(im);
-    im.onerror = ()=>rej(new Error('画像を開けませんでした'));
-    im.src = URL.createObjectURL(file);
-  });
-  const cv = normalizeImage(img);
-  URL.revokeObjectURL(img.src);
-
-  const worker = await T.createWorker(['jpn','eng'], 1, {
-    logger: m=>{
-      if (onProgress && m.status === 'recognizing text')
-        onProgress(Math.round(m.progress * 100));
-      else if (onProgress && m.status)
-        onProgress(null, m.status === 'loading language traineddata'
-          ? '日本語の辞書を準備しています（初回のみ時間がかかります）' : null);
-    }
-  });
-  try{
-    const {data} = await worker.recognize(cv);
-
-    // 認識ソフトが出した行の区切りを尊重する（小書き文字や伸ばし棒が分かれないように）
-    const rows = (data.lines || []).map(ln=>{
-      const parts = (ln.words || [])
-        .filter(w=>w.text && w.text.trim())
-        .map(w=>({str: w.text, x: w.bbox.x0, w: w.bbox.x1 - w.bbox.x0}));
-      return parts.length ? {y0: ln.bbox.y0, y1: ln.bbox.y1, parts} : null;
-    }).filter(Boolean);
-
-    let text;
-    if (rows.length){
-      const all = rows.flatMap(r=>r.parts);
-      const cw = estimateCharWidth(all);
-      rows.sort((a,b)=>a.y0 - b.y0);
-      text = rowsToText(rows, cw, Math.min(...all.map(i=>i.x)));
-    } else {
-      text = data.text || '';
-    }
-    return fixOcrChords(cleanOcrArtifacts(text));
-  } finally { await worker.terminate(); }
-}
-
-function setBatchNote(msg){
-  const box = document.getElementById('batchOut');
-  if (box) box.innerHTML = `<p class="empty">${esc(msg)}</p>`;
+  // タブは全角スペース2つぶんに均して、桁を保つ
+  return out.join('\n').replace(/\t/g, '\u3000\u3000');
 }
 
 async function takeFiles(fileList){
@@ -2915,7 +2951,8 @@ async function takeFiles(fileList){
     let text = '';
     try{
       if (ext === 'md' || ext === 'txt') text = await readText(f);
-      else if (ext === 'docx') text = await readDocx(f);
+      else if (ext === 'doc' || ext === 'docx' || ext === 'dot')
+        text = (await isOle2(f)) ? await readDoc(f) : await readDocx(f);
       else if (ext === 'pdf') text = await readPdf(f);
       else if (['jpg','jpeg','png','gif','bmp','webp'].includes(ext)){
         setBatchNote(`「${f.name}」から文字を読み取っています…`);
@@ -3427,7 +3464,11 @@ async function loadOne(file){
   const busy = (msg)=>{ const el = document.getElementById('draftPrev');
     if (el) el.innerHTML = `<p class="empty">${esc(msg)}</p>`; };
   try{
-    if (ext === 'docx'){ busy('Word を読んでいます…'); text = await readDocx(file); }
+    if (ext === 'doc' || ext === 'docx' || ext === 'dot' || ext === 'rtf'){
+      busy('Word を読んでいます…');
+      // 拡張子より中身を信じる
+      text = (await isOle2(file)) ? await readDoc(file) : await readDocx(file);
+    }
     else if (ext === 'pdf'){ busy('PDF を読んでいます…'); text = await readPdf(file); }
     else if (['jpg','jpeg','png','gif','bmp','webp'].includes(ext)){
       busy('画像から文字を読み取っています…');
