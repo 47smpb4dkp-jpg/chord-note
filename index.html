@@ -247,6 +247,10 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
   border:1px solid var(--line);border-radius:7px;background:var(--surface);color:var(--fg)}
 .dup .diff{margin-top:7px;font-size:.73rem;color:var(--fg-dim);line-height:1.6;
   max-height:5.2em;overflow:hidden}
+/* 空き容量のメーター */
+.qbar{height:9px;border-radius:999px;background:var(--surface-2);overflow:hidden;
+  border:1px solid var(--line);margin-bottom:7px}
+.qbar span{display:block;height:100%;background:var(--accent)}
 .verbadge{font-style:normal;font-size:.66rem;font-weight:700;color:var(--accent);
   background:var(--accent-soft);border-radius:5px;padding:1px 6px;margin-left:6px;white-space:nowrap}
 
@@ -1103,6 +1107,38 @@ async function delAudio(id){
   const db = await audioDB(); if (!db) return;
   db.transaction('audio','readwrite').objectStore('audio').delete(id);
 }
+// 端末に入っている音源の一覧と、それぞれの大きさ
+async function audioList(){
+  const db = await audioDB(); if (!db) return [];
+  return new Promise(res=>{
+    const out = [];
+    const rq = db.transaction('audio').objectStore('audio').openCursor();
+    rq.onsuccess = ()=>{
+      const c = rq.result;
+      if (!c){ res(out); return; }
+      out.push({id: c.key, size: (c.value && c.value.size) || 0});
+      c.continue();
+    };
+    rq.onerror = ()=>res(out);
+  });
+}
+function mb(n){
+  if (!n) return '0 MB';
+  if (n < 1024*1024) return (n/1024).toFixed(0) + ' KB';
+  return (n/1024/1024).toFixed(1) + ' MB';
+}
+// ブラウザが教えてくれる使用量と上限
+async function storageInfo(){
+  try{
+    if (!navigator.storage || !navigator.storage.estimate) return null;
+    const e = await navigator.storage.estimate();
+    return {usage: e.usage || 0, quota: e.quota || 0};
+  }catch(e){ return null; }
+}
+function isQuotaError(e){
+  const t = ((e && e.code) || '') + ' ' + ((e && e.message) || String(e));
+  return /QuotaExceeded|quota|storage is full|exceeded the quota/i.test(t);
+}
 
 /* ============ 4.6 端末間の同期（Firebase） ============ */
 const FB_CONFIG = {
@@ -1133,12 +1169,13 @@ function initSync(){
   }catch(e){ showSyncError(e, '初期化'); }
 }
 
-let syncError = '';
+let syncError = '', quotaFull = false;
 
 function showSyncError(e, where){
   const code = (e && e.code) || '';
   const msg  = (e && e.message) || String(e);
   syncError = where + ' / ' + (code || '(コードなし)') + ' / ' + msg;
+  if (isQuotaError(e)) quotaFull = true;
   syncState = 'error';
   renderSyncBar();
 }
@@ -1253,7 +1290,16 @@ function renderSyncBar(){
   const label = {off:'同期していません', connecting:'接続中…', on:'同期中',
     error:'同期できません', unavailable:'この環境では同期を使えません'}[syncState] || '';
   if (syncState === 'unavailable'){ el.innerHTML = `<span class="sdot err"></span>${label}`; return; }
-  const errBox = syncError
+  const errBox = quotaFull
+    ? `<div class="syncerr"><b>この端末の保存容量がいっぱいです</b>
+        <p style="margin:6px 0 0;font-size:.82rem;line-height:1.6">
+          譜面そのものは消えていません。曲に付けた音源が場所を取っていることが多いので、
+          下の「空き容量を見る」から音源を外すか、同期の控えを空にしてください。</p>
+        <button class="mini" onclick="openStorage()">空き容量を見る</button>
+        <button class="mini" onclick="copyErr()">エラー内容をコピー</button>
+        <details style="margin-top:7px"><summary style="font-size:.76rem;cursor:pointer">くわしい内容</summary>
+          <code>${esc(syncError)}</code></details></div>`
+    : syncError
     ? `<div class="syncerr"><b>うまくいきませんでした</b>
         <code>${esc(syncError)}</code>
         <button class="mini" onclick="copyErr()">この内容をコピー</button></div>`
@@ -1343,9 +1389,19 @@ async function revokeShare(id){
   }catch(e){ showSyncError(e, '共有の停止'); }
 }
 
-// 曲を直したとき、公開中の「リスト全体」の共有も更新する
+// 曲を直したとき、公開中の「リスト全体」の共有も更新する。
+// 曲を開いただけでも呼ばれるので、少し待ってから、中身が変わったときだけ書く
+let shareRefreshTimer = null, lastSharePayload = '';
+function scheduleShareRefresh(){
+  if (!fb || !fbUser || isViewer) return;
+  clearTimeout(shareRefreshTimer);
+  shareRefreshTimer = setTimeout(refreshAllShares, 4000);
+}
 async function refreshAllShares(){
   if (!fb || !fbUser || isViewer) return;
+  const payload = shareablePayload(songs);
+  const snapJson = JSON.stringify(payload) + JSON.stringify(myChords);
+  if (snapJson === lastSharePayload) return;   // 中身が同じなら書かない
   try{
     const mine = await fb.collection('users').doc(fbUser.uid).collection('shares').get();
     const batch = fb.batch();
@@ -1353,14 +1409,15 @@ async function refreshAllShares(){
     mine.docs.forEach(d=>{
       if (d.data().type !== 'all') return;
       batch.update(fb.collection('shares').doc(d.id), {
-        songs: shareablePayload(songs),
+        songs: payload,
         playlists: shareablePlaylists(songs),
         myChords: myChords.map(m=>({...m}))
       });
       n++;
     });
     if (n) await batch.commit();
-  }catch(e){}
+    lastSharePayload = snapJson;
+  }catch(e){ if (isQuotaError(e)) showSyncError(e, '共有の更新'); }
 }
 
 async function listShares(){
@@ -1533,10 +1590,7 @@ function startMetaSync(){
 // 以前に保存した曲は、曲名やクレジットの行が本文に残っている。一度だけ取り除く
 function migrateSongs(){
   let changed = false;
-  // バージョンのまとまり。昔の曲は自分1つだけのまとまりにする
-  songs.forEach(x=>{
-    if (!x.vgroup){ x.vgroup = x.id; changed = true; }
-  });
+  // vgroup が無い曲は「自分ひとりのまとまり」として扱う（groupKey が id で代用するので書き込みはしない）
   songs.forEach(x=>{
     if (x.v >= 2 || !x.text) return;
     const p = parseSheet(x.text);
@@ -1554,7 +1608,13 @@ function persist(){
   if (isViewer) return;              // 閲覧中は相手の端末に何も残さない
   try{ localStorage.setItem('cn_songs', JSON.stringify(songs)); }catch(e){}
   schedulePush();
-  refreshAllShares();
+  scheduleShareRefresh();
+}
+// 開いた回数など、譜面の中身に関係ない保存。共有の貼り直しはしない
+function persistCount(){
+  if (isViewer) return;
+  try{ localStorage.setItem('cn_songs', JSON.stringify(songs)); }catch(e){}
+  schedulePush();
 }
 
 /* ============ 6. 描画: コード譜 ============ */
@@ -1732,7 +1792,7 @@ function openSongView(id, from){
   alignNav(id);
   openSong=id; editing=null;
   const x = songs.find(s=>s.id===id);
-  if (x){ x.plays = (x.plays||0)+1; x.lastOpen = Date.now(); persist(); }
+  if (x){ x.plays = (x.plays||0)+1; x.lastOpen = Date.now(); persistCount(); }
   render(); document.getElementById('main').scrollTop=0;
 }
 
@@ -1764,7 +1824,7 @@ function songStep(d){
   stopScroll(); stopSongRec();
   openSong = navIds[j];
   const x = songs.find(s=>s.id===openSong);
-  if (x){ x.plays = (x.plays||0)+1; x.lastOpen = Date.now(); persist(); }
+  if (x){ x.plays = (x.plays||0)+1; x.lastOpen = Date.now(); persistCount(); }
   render();
   document.getElementById('main').scrollTop = 0;
 }
@@ -1916,7 +1976,7 @@ function switchVersion(id){
   openSong = id;
   s.lastOpen = Date.now();
   s.plays = (s.plays||0) + 1;
-  persist();
+  persistCount();
   render();
   document.getElementById('main').scrollTop = 0;
 }
@@ -2098,8 +2158,18 @@ function render(){
         <div class="btnrow" style="justify-content:center">
           <button class="act" onclick="go('new')">曲を作る</button></div></div>`;
       listOrder = [];
+      if (storageOpen){
+        const sb = document.createElement('div');
+        sb.className = 'card';
+        sb.style.marginBottom = '14px';
+        sb.innerHTML = `<div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
+          <h2 style="margin:0;flex:1">端末の空き容量</h2>
+          <button class="mini" onclick="closeStorage()">閉じる</button></div><div id="storageBox"></div>`;
+        d.prepend(sb);
+      }
       view.appendChild(d);
       renderSyncBar();
+      if (storageOpen) drawStorage();
       return;
     }
     let html = syncHtml + `<div class="picker" style="margin-bottom:14px">
@@ -2163,14 +2233,23 @@ function render(){
         <div id="shareList"><p class="hint" style="margin:0">読み込み中…</p></div>
       </div>`;
     }
-    if (!isViewer && !selectMode && songs.length){
+    if (!isViewer && !selectMode){
       html += `<div class="resetline">
-        <button onclick="openTidy()">読み込み済みの曲を整理し直す</button>
-        <button onclick="askResetAll()">すべての曲を消す</button></div>`;
+        <button onclick="openStorage()">端末の空き容量を見る</button>
+        ${songs.length?`<button onclick="openTidy()">読み込み済みの曲を整理し直す</button>
+        <button onclick="askResetAll()">すべての曲を消す</button>`:''}</div>`;
+    }
+    if (storageOpen){
+      html = `<div class="card" style="margin-bottom:14px">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
+          <h2 style="margin:0;flex:1">端末の空き容量</h2>
+          <button class="mini" onclick="closeStorage()">閉じる</button></div>
+        <div id="storageBox"></div></div>` + html;
     }
     d.innerHTML = html;
     view.appendChild(d);
     renderSyncBar();
+    if (storageOpen) drawStorage();
     if (!isViewer && fbUser && !selectMode) listShares();
   }
 
@@ -3533,6 +3612,79 @@ function importBatch(){
   const msg = [added?added+'曲を追加':'', versions?versions+'バージョンを追加':'', over?over+'件を上書き':'']
     .filter(Boolean).join(' / ');
   if (msg) alertShare(msg);
+}
+
+/* ---- 端末の空き容量 ---- */
+let storageOpen = false;
+function openStorage(){ storageOpen = true; go('list'); setTimeout(drawStorage, 30); }
+function closeStorage(){ storageOpen = false; render(); }
+
+async function drawStorage(){
+  const box = document.getElementById('storageBox');
+  if (!box) return;
+  box.innerHTML = '<p class="hint" style="margin:0">調べています…</p>';
+  const [info, list] = await Promise.all([storageInfo(), audioList()]);
+  const total = list.reduce((a,x)=>a+x.size, 0);
+  const rows = list.map(x=>{
+    const song = songs.find(y=>y.id === x.id);
+    return {id:x.id, size:x.size, title: song ? song.title : '（消した曲の音源）',
+            vname: song ? (song.vname||'') : '', orphan: !song};
+  }).sort((a,b)=>b.size-a.size);
+  const orphans = rows.filter(r=>r.orphan);
+  const bar = info && info.quota
+    ? `<div class="qbar"><span style="width:${Math.min(100, Math.round(info.usage/info.quota*100))}%"></span></div>
+       <div class="stat"><span>使用 <b>${mb(info.usage)}</b></span><span>上限 <b>${mb(info.quota)}</b></span></div>`
+    : `<p class="hint" style="margin:0 0 8px">このブラウザでは使用量を教えてもらえません。</p>`;
+  box.innerHTML = bar + `
+    <div class="secthead" style="margin-top:16px">曲に付けた音源 ${list.length} 件 · ${mb(total)}</div>
+    ${list.length
+      ? `<div class="songlist">` + rows.map(r=>`<div class="songrow">
+          <button class="nm" style="cursor:default">${esc(r.title)}${
+            r.vname?`<i class="verbadge">${esc(r.vname)}</i>`:''}
+            <div class="ar">${mb(r.size)}${r.orphan?' · 曲はもうありません':''}</div></button>
+          <button class="mini danger" onclick="dropAudio('${r.id}')">外す</button></div>`).join('') + `</div>
+        <div class="btnrow" style="margin-top:10px">
+          ${orphans.length?`<button class="ghost" onclick="dropAudioAll(true)">いらない音源だけ外す（${orphans.length}件）</button>`:''}
+          <button class="ghost danger" onclick="dropAudioAll(false)">音源をぜんぶ外す</button></div>`
+      : `<p class="hint" style="margin:0">音源は入っていません。</p>`}
+    <div class="secthead" style="margin-top:20px">同期の控え</div>
+    <p class="sub">圏外でも見られるように、同期の内容を端末にも持っています。これを空にしても、
+      クラウド側の譜面は消えません。次にネットにつないだときに取り直します。</p>
+    <div class="btnrow"><button class="ghost" onclick="clearCache()">同期の控えを空にして読み込み直す</button></div>
+    <p class="hint" style="margin-top:14px">音源はこの端末にだけ置いてあり、ほかの端末には同期されません。
+      外しても譜面は残ります。元の音源ファイルが手元にあれば、曲画面から付け直せます。</p>`;
+}
+
+async function dropAudio(id){
+  await delAudio(id);
+  const s = songs.find(x=>x.id===id);
+  if (s && s.hasAudio){ s.hasAudio = false; persistCount(); }
+  drawStorage();
+  alertShare('音源を外しました');
+}
+async function dropAudioAll(orphanOnly){
+  const list = await audioList();
+  let n = 0;
+  for (const a of list){
+    const s = songs.find(x=>x.id===a.id);
+    if (orphanOnly && s) continue;
+    await delAudio(a.id);
+    if (s && s.hasAudio) s.hasAudio = false;
+    n++;
+  }
+  persistCount();
+  drawStorage();
+  alertShare(n + '件の音源を外しました');
+}
+// Firestore が端末に持っている控えを捨てる。捨てたあとは読み込み直しが要る
+async function clearCache(){
+  try{
+    if (fb){ await fb.terminate(); await fb.clearPersistence(); }
+    alertShare('空にしました。読み込み直します');
+    setTimeout(()=>location.reload(), 700);
+  }catch(e){
+    alertShare('空にできませんでした。ほかのタブでこのページを開いていたら閉じてから、もう一度試してください');
+  }
 }
 
 /* ---- マイコード ---- */
