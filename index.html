@@ -1876,6 +1876,7 @@ function render(){
       html = `<div class="selbar">
         <button class="mini" onclick="moveSelected()" ${selected.size?'':'disabled'}>ジャンルを変える</button>
         <button class="mini" onclick="addSelectedToPlaylist()" ${selected.size?'':'disabled'}>プレイリストに追加</button>
+        <button class="mini" onclick="exportSelected()" ${selected.size?'':'disabled'}>書き出し</button>
         <button class="mini" onclick="shareSelected()" ${selected.size?'':'disabled'}>共有リンクを作る</button>
         <button class="mini danger" onclick="askDeleteSelected()" ${selected.size?'':'disabled'}>削除</button>
       </div>` + html;
@@ -2191,18 +2192,40 @@ function exportSong(id){
   const s = songs.find(x=>x.id===id); if (!s) return;
   download(safeName(s.title) + '.md', songToMd(s));
 }
-async function exportFolder(name){
-  const items = songs.filter(x=>(x.folder||'未分類')===name);
+async function exportSelected(){
+  if (isViewer || !selected.size) return;
+  const items = songs.filter(x=>selected.has(x.id));
   if (!items.length) return;
+  if (items.length === 1){ exportSong(items[0].id); selectMode = false; selected.clear(); render(); return; }
+  await zipSongs(items, '選んだ' + items.length + '曲');
+  selectMode = false; selected.clear();
+  render();
+}
+
+// 複数の曲をまとめて1つの zip にする
+async function zipSongs(items, name){
   if (typeof JSZip === 'undefined'){ items.forEach(s=>exportSong(s.id)); return; }
   const zip = new JSZip(), dir = zip.folder(safeName(name));
-  items.forEach(s=>dir.file(safeName(s.title)+'.md', songToMd(s)));
+  const used = new Set();
+  items.forEach(s=>{
+    let fn = safeName(s.title || '無題');
+    let n = 2;
+    while (used.has(fn)){ fn = safeName(s.title || '無題') + ' (' + (n++) + ')'; }
+    used.add(fn);
+    dir.file(fn + '.md', songToMd(s));
+  });
   const blob = await zip.generateAsync({type:'blob'});
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = safeName(name) + '.zip';
   document.body.appendChild(a); a.click();
   setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  alertShare(items.length + '曲を書き出しました');
+}
+
+async function exportFolder(name){
+  const items = songs.filter(x=>(x.folder||'未分類')===name);
+  if (items.length) await zipSongs(items, name);
 }
 
 // そのキーでよく使うコードを並べる
