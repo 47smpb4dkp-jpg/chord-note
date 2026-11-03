@@ -1161,6 +1161,13 @@ const AFORM = {'':[-1,0,2,2,2,0],'m':[-1,0,2,2,1,0],'7':[-1,0,2,0,2,0],'m7':[-1,
   'sus2':[-1,0,2,2,0,0],'add9':[-1,0,2,4,2,0],'9':[-1,0,2,4,2,3],'aug':[-1,0,3,2,2,1],
   'm7b5':[-1,0,1,2,1,3],'dim':[-1,0,1,2,1,2],'mM7':[-1,0,2,1,1,0]};
 
+// 4弦ルート（D型）。低い弦は鳴らさない
+const DFORM = {'':[-1,-1,0,2,3,2],'m':[-1,-1,0,2,3,1],'7':[-1,-1,0,2,1,2],
+  'm7':[-1,-1,0,2,1,1],'maj7':[-1,-1,0,2,2,2],'6':[-1,-1,0,2,0,2],
+  'm6':[-1,-1,0,2,0,1],'sus4':[-1,-1,0,2,3,3],'sus2':[-1,-1,0,2,3,0],
+  'add9':[-1,-1,0,2,3,0],'m7b5':[-1,-1,0,1,1,1],'dim':[-1,-1,0,1,0,1],
+  'mM7':[-1,-1,0,2,2,1],'aug':[-1,-1,0,3,3,2]};
+
 const QUALITIES = [
   {q:'',     label:'メジャー', ex:'C'},
   {q:'m',    label:'マイナー', ex:'Cm'},
@@ -1186,41 +1193,56 @@ function moveForm(form, steps){
   return form.map(f => f === -1 ? -1 : f + steps);
 }
 
-// ルート音と種類から、押さえやすい順に形を返す
+// 指が届くか。押さえる幅が4フレットを超えるもの、ハイポジションすぎるものは外す
+function playableShape(f){
+  const held = f.filter(x=>x > 0);
+  if (!held.length) return true;
+  const lo = Math.min(...held), hi = Math.max(...held);
+  if (hi - lo > 3) return false;      // 指が開かない
+  if (lo > 12) return false;          // 高すぎて使わない
+  // 指の数を数える。いちばん低いフレットは人差し指で押さえ（セーハ）、
+  // 残りは1フレットにつき1本。4本を超えたら押さえられない
+  const upper = new Set(held.filter(x=>x > lo));
+  if (1 + upper.size > 4) return false;
+  return true;
+}
+
+// ルート音と種類から、基本の形だけを返す。
+// 開放弦を使う形 / 6弦ルート / 5弦ルート / 4弦ルート の4つが基本で、
+// 無理な指の形になるものは載せない
 function buildShapes(root, qual){
   const out = [];
   const name = root + (qual === 'maj7' ? 'maj7' : qual);
   const FLATNAME = {'C#':'Db','D#':'Eb','F#':'Gb','G#':'Ab','A#':'Bb'};
   const alt = FLATNAME[root] ? FLATNAME[root] + (qual === 'maj7' ? 'maj7' : qual) : null;
   const preset = SHAPES[name] || SHAPES[root + qual] || (alt ? SHAPES[alt] : null);
-  const formLabel = f => {
-    if (f.includes(0)) return '開放弦を使う形';
-    const lo = Math.min(...f.filter(x=>x>0));
-    return lo + 'F のフォーム';
+
+  // 覚えてある押さえ方のうち、開放弦を使うものだけを「基本」に入れる
+  if (preset) preset.forEach(f=>{
+    if (f.includes(0)) out.push({frets:f, label:'開放弦を使う形', rank:0});
+  });
+
+  const add = (form, step, label, rank)=>{
+    if (!form) return;
+    const f = moveForm(form, step);
+    if (!playableShape(f)) return;
+    out.push({frets:f, label: step === 0 ? '開放弦を使う形' : label + '（' + step + 'F）',
+              rank: step === 0 ? 0 : rank});
   };
-  if (preset) preset.forEach(f => out.push({frets:f, label:formLabel(f)}));
+  add(EFORM[qual], (pc(root) - pc('E') + 12) % 12, '6弦ルート', 1);
+  add(AFORM[qual], (pc(root) - pc('A') + 12) % 12, '5弦ルート', 2);
+  add(DFORM[qual], (pc(root) - pc('D') + 12) % 12, '4弦ルート', 3);
 
-  const eStep = (pc(root) - pc('E') + 12) % 12;
-  if (EFORM[qual]) out.push({frets: moveForm(EFORM[qual], eStep),
-    label: eStep === 0 ? '開放弦を使う形' : '6弦ルート（E型・' + eStep + 'F）'});
-
-  const aStep = (pc(root) - pc('A') + 12) % 12;
-  if (AFORM[qual]) out.push({frets: moveForm(AFORM[qual], aStep),
-    label: aStep === 0 ? '開放弦を使う形' : '5弦ルート（A型・' + aStep + 'F）'});
-
-  // 重複を除き、開放弦を含む形・低いポジションを先に
-  const seen = new Set(), uniq = [];
+  // 同じ形・同じ種類が重ならないようにする
+  const seen = new Set(), byRank = new Set(), uniq = [];
+  out.sort((a,b)=>a.rank - b.rank);
   for (const o of out){
     const k = o.frets.join(',');
     if (seen.has(k)) continue;
-    seen.add(k); uniq.push(o);
+    // 開放弦の形は1つだけ、あとは種類ごとに1つずつ
+    if (byRank.has(o.rank)) continue;
+    seen.add(k); byRank.add(o.rank); uniq.push(o);
   }
-  uniq.sort((a,b)=>{
-    const openA = a.frets.includes(0) ? 0 : 1, openB = b.frets.includes(0) ? 0 : 1;
-    if (openA !== openB) return openA - openB;
-    const lo = x => Math.min(...x.frets.filter(f=>f>0).concat([99]));
-    return lo(a) - lo(b);
-  });
   return uniq;
 }
 
@@ -1251,7 +1273,10 @@ function splitChord(name){
 function diagramSVG(frets){
   const played = frets.filter(f=>f>0);
   const minF = played.length?Math.min(...played):1;
-  const base = minF>4 ? minF : 1;
+  const maxF = played.length?Math.max(...played):1;
+  // 図は4フレット分しか出せない。いちばん高い音が収まるように開始位置を決める
+  // （ここを間違えると、押さえる音が図からはみ出して消えてしまう）
+  const base = maxF > 4 ? Math.max(1, minF) : 1;
   const W=76,H=92, L=12, T=20, SW=10, FH=13;
   let s = `<svg viewBox="0 0 ${W} ${H}" role="img">`;
   // ナット or ポジション番号
@@ -1629,7 +1654,7 @@ const FB_CONFIG = {
 };
 
 // このファイルの版。差し替えたかどうかの目印になる
-const APP_BUILD = '2026-11-03 17:04';
+const APP_BUILD = '2026-11-03 18:13';
 
 let fb = null, fbUser = null, fbUnsub = null, syncState = 'off', pushTimer = null;
 let syncPaused = false;   // まとめ消しの最中だけ true。消しかけの状態が戻ってくるのを防ぐ
@@ -1639,8 +1664,16 @@ function initSync(){
   try{
     firebase.initializeApp(FB_CONFIG);
     fb = firebase.firestore();
-    // 圏外でも使えるように端末側にも持つ
-    fb.enablePersistence({synchronizeTabs:true}).catch(()=>{});
+    // 圏外でも使えるように端末側にも控えを置く。
+    // 端末の容量が足りないときは、この控えをやめると書き込めるようになる
+    if (offlineWanted()){
+      fb.enablePersistence({synchronizeTabs:true}).catch(e=>{
+        offlineState = 'つけられませんでした（' + ((e && e.code) || '') + '）';
+      });
+      offlineState = '使う';
+    } else {
+      offlineState = '使わない';
+    }
     firebase.auth().onAuthStateChanged(u=>{
       fbUser = u;
       if (isViewer) return;          // 閲覧モードでは自分のデータを読みにいかない
@@ -1652,6 +1685,75 @@ function initSync(){
 }
 
 let syncError = '', quotaFull = false, quotaNote = '';
+let offlineState = '';
+
+/* ---- オフライン用の控えを使うかどうか ---- */
+const OFFLINE_KEY = 'cn_offline';
+function offlineWanted(){
+  try{ return localStorage.getItem(OFFLINE_KEY) !== 'off'; }catch(e){ return true; }
+}
+// 控えをやめて開き直す。端末の容量が足りないときの逃げ道
+async function disableOffline(){
+  try{ localStorage.setItem(OFFLINE_KEY, 'off'); }catch(e){}
+  alertShare('控えを使わない設定にしました。開き直します');
+  try{
+    if (fb && typeof fb.terminate === 'function') await fb.terminate();
+    if (fb && typeof fb.clearPersistence === 'function') await fb.clearPersistence();
+  }catch(e){}
+  setTimeout(()=>location.reload(), 900);
+}
+function enableOffline(){
+  try{ localStorage.setItem(OFFLINE_KEY, 'on'); }catch(e){}
+  alertShare('控えを使う設定にしました。開き直します');
+  setTimeout(()=>location.reload(), 900);
+}
+
+// 端末が本当に書き込めるのか、小さく試してみる
+async function diagWrite(){
+  const box = document.getElementById('diagOut');
+  if (box) box.innerHTML = '<p class="hint" style="margin:8px 0 0">試しています…</p>';
+  const lines = [];
+  const info = await storageInfo();
+  if (info) lines.push('ブラウザの申告: 使用 ' + mb(info.usage) + ' / 上限 ' + mb(info.quota));
+  const list = await audioList();
+  lines.push('音源: ' + list.length + ' 件 / ' + mb(list.reduce((a,x)=>a+x.size,0)));
+  lines.push('オフライン用の控え: ' + (offlineState || '不明'));
+
+  // 1MB 書いてみる
+  const probe = 'cn_probe_' + Date.now();
+  let verdict = '';
+  try{
+    const db = await new Promise((res,rej)=>{
+      const rq = indexedDB.open(probe, 1);
+      rq.onupgradeneeded = ()=>rq.result.createObjectStore('t');
+      rq.onsuccess = ()=>res(rq.result);
+      rq.onerror = ()=>rej(rq.error);
+    });
+    const blob = new Blob([new Uint8Array(1024*1024)]);
+    const okWrite = await new Promise(res=>{
+      const tx = db.transaction('t','readwrite');
+      tx.objectStore('t').put(blob, 'x');
+      tx.oncomplete = ()=>res(true);
+      tx.onerror = ()=>res(false);
+      tx.onabort = ()=>res(false);
+    });
+    db.close();
+    indexedDB.deleteDatabase(probe);
+    verdict = okWrite ? '1MB の書き込み: できた' : '1MB の書き込み: できなかった';
+  }catch(e){
+    verdict = '1MB の書き込み: できなかった（' + ((e && (e.name||e.message)) || '') + '）';
+  }
+  lines.push(verdict);
+  const bad = /できなかった/.test(verdict);
+  lines.push(bad
+    ? '→ この端末そのものが書き込めない状態です。パソコンの空きディスクを増やすか、下の「控えを使わない」を試してください。'
+    : '→ 端末は書き込めています。控えが大きくなりすぎている可能性があるので、控えを捨てるか、使わない設定にしてください。');
+  if (box) box.innerHTML = `<div class="syncerr" style="margin-top:10px">
+    <b>調べた結果</b><code id="diagCode">${esc(lines.join('\n'))}</code>
+    <div class="btnrow" style="margin-top:2px">
+      <button class="mini" onclick="copyText(document.getElementById('diagCode').textContent)">この内容をコピー</button>
+    </div></div>`;
+}
 
 function showSyncError(e, where){
   const code = (e && e.code) || '';
@@ -1816,6 +1918,7 @@ function renderSyncBar(){
           使用量が上限に届いていなくても、<b>パソコンの空きディスクが少ないと</b>同じエラーが出ます。
           その場合はパソコン側の空き容量も確かめてください。</p>
         <button class="mini" onclick="openStorage()">空き容量を見る</button>
+        ${offlineWanted() ? '<button class="mini" onclick="disableOffline()">控えを使わない設定にして開き直す</button>' : ''}
         <button class="mini" onclick="copyErr()">エラー内容をコピー</button>
         <details style="margin-top:7px"><summary style="font-size:.76rem;cursor:pointer">くわしい内容</summary>
           <code>${esc(syncError)}</code></details></div>`
@@ -4641,8 +4744,20 @@ async function drawStorage(){
     <p class="sub">圏外でも譜面を開けるように、クラウドにある内容の<b>コピーをこの端末にも置いて</b>います。
       これを捨てても、<b>クラウド側の譜面は消えません</b>。次にネットにつないだときに降りてきます。
       場所が足りないときや、表示がおかしいときに試してください。</p>
-    <div class="btnrow"><button class="ghost" onclick="clearCache()">控えを捨てて読み込み直す</button></div>
+    <div class="btnrow">
+      <button class="ghost" onclick="clearCache()">控えを捨てて読み込み直す</button>
+      ${offlineWanted()
+        ? '<button class="ghost danger" onclick="disableOffline()">控えを使わない設定にする</button>'
+        : '<button class="act" onclick="enableOffline()">控えを使う設定に戻す</button>'}
+    </div>
+    <p class="hint">いま: <b>${esc(offlineState || (offlineWanted()?'使う':'使わない'))}</b>。
+      「使わない」にすると、この端末に控えを置かなくなるので<b>容量のエラーが出なくなります</b>。
+      そのかわり<b>圏外では譜面を開けません</b>（ネットにつながっていれば今までどおり使えます）。</p>
     <div id="cacheMsg"></div>
+    <div class="secthead" style="margin-top:20px">うまくいかないとき</div>
+    <p class="sub">容量のエラーが続くときは、何が原因か調べられます。</p>
+    <div class="btnrow"><button class="ghost" onclick="diagWrite()">書き込めるか調べる</button></div>
+    <div id="diagOut"></div>
     <p class="hint" style="margin-top:14px">音源はこの端末にだけ置いてあり、ほかの端末には同期されません。
       外しても譜面は残ります。元の音源ファイルが手元にあれば、曲画面から付け直せます。</p>`;
 }
