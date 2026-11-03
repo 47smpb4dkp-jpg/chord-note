@@ -241,6 +241,29 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
   align-items:center;justify-content:center}
 .pg:hover{background:var(--surface-2)}
 .pg[disabled]{opacity:.28;pointer-events:none}
+/* カポと押さえ方の関係 */
+.caporow{display:flex;align-items:center;gap:8px;flex:1 1 100%;flex-wrap:wrap;margin-top:2px;
+  font-size:.78rem;color:var(--fg-dim)}
+.caporow .cl{font-weight:700;color:var(--accent);background:var(--accent-soft);
+  border-radius:6px;padding:2px 8px;flex:0 0 auto}
+.caporow .cx b{color:var(--fg);font-family:var(--font-mono);font-size:.88rem;margin-left:3px}
+.caporow .cx.now b{color:var(--accent)}
+.caporow .cx.now::after{content:'（表示中）';font-size:.66rem;color:var(--accent);margin-left:4px}
+.caporow .ar{opacity:.6}
+.cvb{border:1px solid var(--line);border-radius:999px;padding:4px 11px;font-size:.74rem;
+  background:var(--surface);color:var(--fg);margin-left:auto}
+.cvb.on{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.capolist{display:flex;flex-direction:column;gap:6px;max-height:52vh;overflow-y:auto}
+.capor{display:flex;align-items:center;gap:12px;border:1px solid var(--line);border-radius:9px;
+  padding:9px 12px;background:var(--surface);color:var(--fg);text-align:left}
+.capor .cn{width:5.4em;flex:0 0 auto;font-size:.8rem;color:var(--fg-dim)}
+.capor .cp{font-family:var(--font-mono);font-weight:700;font-size:1rem;color:var(--accent);flex:1 1 auto}
+.capor .ce{font-size:.68rem;color:var(--fg-dim)}
+.capor.easy{border-color:var(--accent)}
+.capor.easy .ce{color:var(--accent);font-weight:700}
+.capor.on{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.capor.on .cn,.capor.on .cp,.capor.on .ce{color:var(--on-accent)}
+
 /* バージョン切り替えの帯 */
 .vrow{display:flex;align-items:center;gap:7px;flex:1 1 100%;flex-wrap:wrap;margin-top:2px}
 .vlab{font-size:.68rem;letter-spacing:.07em;font-weight:700;color:var(--fg-dim);flex:0 0 auto}
@@ -369,6 +392,7 @@ textarea,input[type=text]{width:100%;background:var(--surface);color:var(--fg);b
 .aligned .at-c:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 .aligned .at-s{color:var(--fg);font-weight:700}
 .aligned .at-b,.aligned .at-n{color:var(--fg-dim)}
+.aligned .at-m{color:var(--accent);opacity:.55;font-weight:700}
 .aligned .lntg{position:absolute;left:-30px;top:0;height:calc(1em * var(--edit-lh))}
 textarea{min-height:190px;resize:vertical;white-space:pre;overflow-wrap:normal;overflow-x:auto}
 .hint{font-size:.74rem;color:var(--fg-dim);line-height:1.6;margin:6px 0 0}
@@ -806,8 +830,17 @@ function tokenizeRaw(line){
   return out;
 }
 
+// 行頭の @ は「この行はコード行」という指示。本文からは外して扱う
+function stripMark(line){
+  const m = /^[@＠]\s?/.exec(line || '');
+  return m ? {body: line.slice(m[0].length), mark: m[0]} : {body: line || '', mark: ''};
+}
+
 // 'chord' = コードを含む行 / 'section' = セクション名だけの行 / 'lyric' = それ以外
 function lineKind(line){
+  const sm = stripMark(line);
+  if (sm.mark) return 'chord';          // @ が付いていれば問答無用でコード行
+  line = sm.body;
   const toks = tokenize(line);
   if (!toks.length) return 'lyric';
   const cls = toks.map(t=>t.joined ? {kind:'c', text:t.joined} : classify(t.raw));
@@ -909,7 +942,7 @@ function parseBody(text){
 function parseSheet(text){
   let lines = text.replace(/\r\n/g,'\n').split('\n');
   const out = {title:'', artist:'', credit:'', key:null, keyGuessed:false,
-               capo:null, bpm:null, transpose:0, folder:'', vname:'', blocks:[]};
+               capo:null, bpm:null, transpose:0, folder:'', vname:'', capoBase:'', blocks:[]};
 
   // --- 冒頭の --- で挟まれた情報欄を読み取り、本文からは外す ---
   let i = 0;
@@ -929,6 +962,7 @@ function parseSheet(text){
         else if (k === 'bpm') out.bpm = parseInt(v, 10) || null;
         else if (k === 'folder') out.folder = v;
         else if (k === 'version') out.vname = v;
+        else if (k === 'capobase') out.capoBase = (v === 'sound' ? 'sound' : 'play');
         else if (k === 'transpose') out.transpose = parseInt(v, 10) || 0;
         else if (k === 'speed' && !out.bpm){
           const sp = parseFloat(v);
@@ -990,7 +1024,12 @@ function parseSheet(text){
   // --- 書いていなければコードから推測する ---
   if (!out.key){
     const g = guessKey(out.blocks);
-    if (g){ out.key = g.root + (g.mode === 'minor' ? 'm' : ''); out.keyGuessed = true; }
+    if (g){
+      // 譜面のコードは押さえる形なので、カポのぶん上げて「鳴る音」のキーにする
+      const guessed = g.root + (g.mode === 'minor' ? 'm' : '');
+      out.key = out.capo ? shiftKey(guessed, out.capo) : guessed;
+      out.keyGuessed = true;
+    }
   }
   return out;
 }
@@ -999,23 +1038,79 @@ function parseSheet(text){
 const SHARP=['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
 const FLATEQ={'Db':'C#','Eb':'D#','Gb':'F#','Ab':'G#','Bb':'A#','Cb':'B','Fb':'E'};
 function pc(n){ return SHARP.indexOf(FLATEQ[n]||n); }
-function shiftRoot(root,n){
-  const i = pc(root); if (i<0) return root;
-  return SHARP[(i+n%12+12)%12];
+const FLATNAME = {1:'Db', 3:'Eb', 6:'Gb', 8:'Ab', 10:'Bb'};
+function shiftRoot(root,n,flat){
+  const i = pc(normTok(root)); if (i<0) return root;
+  const j = (i+n%12+12)%12;
+  return (flat && FLATNAME[j]) ? FLATNAME[j] : SHARP[j];
 }
-function transposeChord(ch,n){
+// 元が ♭ で書いてあるか（b5 や b9 と間違えないよう、音名の直後だけを見る）
+function usesFlat(t){ return /^[A-G][b♭]/.test(String(t||'').trim()); }
+// カポは弦の音を上げる道具。カポN で「押さえる形」は、鳴らしたいキーより N 低い形になる。
+//   鳴る音 Em ＋ カポ2  →  押さえ方 Dm
+//   鳴る音 C  ＋ カポ3  →  押さえ方 A
+// 譜面に書いてあるコードが何を指しているか。
+//   'play'  … カポを付けて実際に押さえる形（三好さんの譜面はこちら。既定）
+//   'sound' … カポを無視した、鳴る音そのもの
+function capoBaseOf(s){ return s.capoBase === 'sound' ? 'sound' : 'play'; }
+
+// 画面に出すコードを何半音ずらすか。
+// 書いてあるのが押さえ方なら、鳴る音で見るときにカポのぶん上げる（逆なら下げる）
+function shiftOf(s){
+  const t = s.transpose || 0, c = s.capo || 0;
+  if (!c || !s.capoView) return t;
+  return t + (capoBaseOf(s) === 'play' ? c : -c);
+}
+
+// キー名（Em / B♭ など）を n 半音ずらす。マイナーの m は残す
+function shiftKey(k, n){
+  const t = String(k || '').trim();
+  if (!t) return t;
+  const m = /^([A-G][#b♭♯]?)(.*)$/.exec(normTok(t));
+  if (!m) return t;
+  if (!n) return t;
+  const flat = usesFlat(t);
+  const wide = /^[A-G]♭/.test(t.trim());
+  const r = shiftRoot(m[1], n, flat);
+  return (wide ? r.replace(/b/g,'♭') : r) + m[2];
+}
+// ♭ で書くのがふつうのキー（F なら 4番目は A# ではなく B♭）
+const FLAT_KEYS = ['F','Bb','Eb','Ab','Db','Gb','Dm','Gm','Cm','Fm','Bbm','Ebm'];
+function keyPrefersFlat(k){
+  const t = normTok(String(k||'').trim()).toLowerCase();
+  return FLAT_KEYS.some(x=>x.toLowerCase() === t);
+}
+// いま画面に出ているキー。ヘッダーと譜面で同じ答えを使う
+function shownKeyOf(s){
+  const sound = shiftKey(s.key, s.transpose || 0);
+  const play  = shiftKey(sound, -(s.capo || 0));
+  const play1 = capoBaseOf(s) === 'play';
+  const writ  = play1 ? play  : sound;
+  const other = play1 ? sound : play;
+  return (s.capo && s.capoView) ? other : writ;
+}
+
+// 押さえやすい形かどうか（弾き語りでよく使う開放弦のコード）
+const EASY_KEYS = ['C','G','D','A','E','Am','Em','Dm'];
+function isEasyKey(k){
+  const t = normTok(String(k||'').trim());
+  return EASY_KEYS.some(e=>e.toLowerCase() === t.toLowerCase());
+}
+
+function transposeChord(ch,n,pref){
   if (!n) return ch;
   // 「D//」のように後ろに付く拍の印は、動かさずに取っておく
   const bm = /([\/|｜]+)$/.exec(ch);
   const beat = bm ? bm[1] : '';
   let out = bm ? ch.slice(0, ch.length - beat.length) : ch;
-  // ♭ で書いてあれば ♭ のまま返す
-  const flat = /♭/.test(out);
-  const fix = r => flat ? r.replace(/b/g, '♭') : r;
-  out = out.replace(/^([A-G][#b♭♯]?)/, m=>fix(shiftRoot(normTok(m), n)));
+  // ♭ で書いてあれば ♭ のまま返す。書いていなくてもキーが ♭ 系なら ♭ で出す
+  const flat = usesFlat(out) || !!pref;
+  const wide = /^[A-G]♭/.test(out);
+  const fix = r => wide ? r.replace(/b/g, '♭') : r;
+  out = out.replace(/^([A-G][#b♭♯]?)/, m=>fix(shiftRoot(m, n, flat)));
   // 「/G」も「onG」も「on G」もベース音を動かす
   out = out.replace(/(\/|\s*(?:on|ON|On|oN|オン)\s*)([A-G][#b♭♯]?)([)）]?)$/,
-    (m, sep, b, tail)=>sep + fix(shiftRoot(normTok(b), n)) + tail);
+    (m, sep, bb, tail)=>sep + fix(shiftRoot(bb, n, usesFlat(bb) || !!pref)) + tail);
   return out + beat;
 }
 
@@ -1697,6 +1792,7 @@ function shareablePayload(list){
     id:s.id, title:s.title||'', artist:s.artist||'', folder:s.folder||'',
     vgroup:s.vgroup||s.id, vname:s.vname||'',
     key:s.key||'', capo:s.capo||0, bpm:s.bpm||100,
+    capoBase:s.capoBase||'sound', capoView:!!s.capoView,
     barsPerLine:s.barsPerLine||8, transpose:s.transpose||0, text:s.text||''
   }));
 }
@@ -2014,7 +2110,8 @@ function makeSegments(chords, lyricText){
 function renderSheet(song, opts){
   opts = opts || {};
   const blocks = parseBody(song.text);
-  const n = song.transpose || 0;
+  const n = shiftOf(song);
+  const pref = n ? keyPrefersFlat(shownKeyOf(song)) : false;
   const el = document.createElement('div');
   el.id = 'sheet';
   el.style.setProperty('--sheet-size', (song.sheetSize || 16) + 'px');
@@ -2050,9 +2147,9 @@ function renderSheet(song, opts){
         if (sg.chord){
           const c = sg.chord;
           top.classList.add(c.kind);
-          top.textContent = c.kind === 'c' ? transposeChord(c.disp || c.text, n) : c.text;
+          top.textContent = c.kind === 'c' ? transposeChord(c.disp || c.text, n, pref) : c.text;
           if (c.kind === 'c'){
-            const forLookup = transposeChord(c.text, n);
+            const forLookup = transposeChord(c.text, n, pref);
             top.tabIndex = 0;
             top.onclick = ()=>showChord(forLookup);
             top.onkeydown = e=>{ if (e.key === 'Enter') showChord(forLookup); };
@@ -2379,6 +2476,13 @@ function render(){
           <div class="field"><label for="eBars">1行の小節数</label>
             <input type="text" id="eBars" value="${s.barsPerLine||8}"></div>
         </div>
+        <div class="field" style="margin:14px 0 0"><label>この譜面に書いてあるコードは</label>
+          <div class="picker" style="gap:6px">
+            <button class="pk sub${capoBaseOf(s)==='play'?' on':''}" onclick="setCapoBase('play')">カポを付けて押さえる形</button>
+            <button class="pk sub${capoBaseOf(s)==='sound'?' on':''}" onclick="setCapoBase('sound')">カポなしの鳴る音</button>
+          </div>
+          <p class="sub" style="margin:6px 0 0">キーの欄は、どちらを選んでも<b>鳴る音</b>のキーを入れてください。
+            カポの計算はここを見て向きを決めます。</p></div>
       </div>
       <div class="card">
         <label style="display:block;font-size:.74rem;font-weight:700;letter-spacing:.05em;color:var(--fg-dim);margin-bottom:6px">コードを入れる</label>
@@ -2410,7 +2514,11 @@ function render(){
   if (openSong){
     const s = songs.find(x=>x.id===openSong);
     if (!s){ openSong = null; render(); return; }
-    const shownKey = s.transpose ? shiftRoot(s.key, s.transpose) : s.key;
+    // s.key は「鳴る音」のキー。押さえるキーはそこからカポのぶん下げたもの
+    const soundKey = shiftKey(s.key, s.transpose || 0);
+    const playKey  = shiftKey(soundKey, -(s.capo || 0));
+    const writAs   = capoBaseOf(s);                 // 譜面に書いてあるのはどちらか
+    const shownKey = shownKeyOf(s);
     // いま何曲目かを出す。1曲だけのときはページめくりを隠す
     const ni = navIds.indexOf(openSong);
     const navPos = (ni >= 0 && navIds.length > 1) ? {i: ni, n: navIds.length} : null;
@@ -2440,12 +2548,23 @@ function render(){
           <button class="stp" onclick="capo(-1)" aria-label="カポを下げる">−</button>
           <button class="stp" onclick="capo(1)" aria-label="カポを上げる">＋</button></span>
         <span class="chipbtn">${s.bpm} BPM</span>
+        <button class="ghost" onclick="openCapo()">カポを選ぶ</button>
         <button class="act" id="scrollBtn" onclick="toggleScroll()">${scrolling?'停止':'自動スクロール'}</button>
         ${isViewer ? '' : `<button class="ghost" onclick="choosePlaylist(['${s.id}'])">リストに追加</button>
         <button class="ghost" onclick="editSong('${s.id}')">編集</button>
         <button class="ghost" onclick="exportSong('${s.id}')">書き出し</button>
         <button class="ghost" onclick="shareSong('${s.id}')">共有</button>`}
       </div>
+      ${(s.capo || 0) ? `<div class="caporow">
+        <span class="cl">カポ ${s.capo}</span>
+        <span class="cx${!s.capoView&&writAs==='play'||s.capoView&&writAs==='sound'?' now':''}">押さえ方 <b>${esc(playKey||'—')}</b></span>
+        <span class="ar">→</span>
+        <span class="cx${!s.capoView&&writAs==='sound'||s.capoView&&writAs==='play'?' now':''}">鳴る音 <b>${esc(soundKey||'—')}</b></span>
+        <button class="cvb${s.capoView?' on':''}" onclick="toggleCapoView()">${
+          s.capoView
+            ? (writAs === 'play' ? '鳴る音で表示中' : '押さえ方で表示中')
+            : (writAs === 'play' ? '鳴る音で見る'   : '押さえ方で見る')}</button>
+      </div>` : ''}
       ${vers.length > 1 ? `<div class="vrow">
         <span class="vlab">バージョン</span>
         ${vers.map(v=>`<button class="vb${v.id===s.id?' on':''}"
@@ -2843,7 +2962,48 @@ function render(){
 
 /* ============ 8. 操作 ============ */
 function tr(n){ const s=songs.find(x=>x.id===openSong); s.transpose=(s.transpose||0)+n; persist(); render(); }
-function capo(n){ const s=songs.find(x=>x.id===openSong); s.capo=Math.max(0,Math.min(9,(s.capo||0)+n)); persist(); render(); }
+// 「書いてあるまま」と「カポを付けて押さえる形」を切り替える
+function toggleCapoView(){
+  const s = songs.find(x=>x.id===openSong); if (!s) return;
+  s.capoView = !s.capoView;
+  persist(); render();
+  const play = capoBaseOf(s) === 'play';
+  alertShare(!s.capoView ? '書いてあるとおりのコードに戻しました'
+    : play ? 'カポ' + (s.capo||0) + ' で実際に鳴る音で出しています'
+           : 'カポ' + (s.capo||0) + ' を付けたときに押さえる形で出しています');
+}
+
+// カポを選ぶ画面。何カポで何の押さえ方になるかを並べて見せる
+function openCapo(){
+  const s = songs.find(x=>x.id===openSong); if (!s) return;
+  const sound = shiftKey(s.key, s.transpose || 0);
+  const rows = [];
+  for (let n = 0; n <= 12; n++){
+    const play = shiftKey(sound, -n);
+    rows.push({n, play, easy: isEasyKey(play), cur: n === (s.capo||0)});
+  }
+  const easy = rows.filter(r=>r.easy && r.n > 0);
+  document.getElementById('popName').textContent = 'カポを選ぶ';
+  document.getElementById('popDesc').textContent =
+    `この曲は ${sound || '—'} で鳴ります。鳴る音は変えずに、押さえる形だけを選びます。` +
+    (easy.length ? `　押さえやすいのは ${easy.map(r=>'カポ'+r.n+'（'+r.play+'）').join('、')} です。` : '');
+  document.getElementById('popGrid').innerHTML = `<div style="flex:1 1 100%">
+    <div class="capolist">${rows.map(r=>`
+      <button class="capor${r.cur?' on':''}${r.easy?' easy':''}" onclick="setCapo(${r.n})">
+        <span class="cn">${r.n === 0 ? 'カポなし' : 'カポ ' + r.n}</span>
+        <span class="cp">${esc(r.play || '—')}</span>
+        <span class="ce">${r.easy ? '押さえやすい' : ''}</span>
+      </button>`).join('')}</div>
+    <p class="hint">左が位置、右がそのときに押さえるコードの形です。鳴る音はどれも ${esc(sound||'—')} のまま変わりません。</p>
+    </div>`;
+  document.getElementById('pop').hidden = false;
+}
+function setCapo(n){
+  const s = songs.find(x=>x.id===openSong); if (!s) return;
+  s.capo = Math.max(0, Math.min(12, n));
+  persist(); closePop(); render();
+}
+function capo(n){ const s=songs.find(x=>x.id===openSong); s.capo=Math.max(0,Math.min(12,(s.capo||0)+n)); persist(); render(); }
 function setBpm(v){
   const s=songs.find(x=>x.id===openSong); s.bpm=+v;
   document.getElementById('bpmOut').textContent = v+' BPM';
@@ -2901,6 +3061,7 @@ function download(name, text){
 function songToMd(s){
   const fm = ['---', 'title: ' + s.title, 'artist: ' + (s.artist||''),
     ...((s.vname||'').trim() ? ['version: ' + s.vname.trim()] : []),
+    ...(capoBaseOf(s) === 'sound' ? ['capobase: sound'] : []),
     'key: ' + (s.key||''), 'capo: ' + (s.capo||0), 'bpm: ' + (s.bpm||''),
     'transpose: ' + (s.transpose||0), 'folder: ' + (s.folder||'未分類'),
     'updated: ' + new Date().toISOString(), 'format: 1', '---', '', ''].join('\n');
@@ -3048,7 +3209,8 @@ function livePreview(){
 // 折り返しも組み直しもしないので、左右の窓が1行ずつぴったり対応する
 function renderAligned(song, opts){
   opts = opts || {};
-  const n = song.transpose || 0;
+  const n = shiftOf(song);
+  const pref = n ? keyPrefersFlat(shownKeyOf(song)) : false;
   const el = document.createElement('div');
   el.className = 'aligned';
   const lines = String(song.text == null ? '' : song.text).replace(/\r\n/g,'\n').split('\n');
@@ -3061,8 +3223,19 @@ function renderAligned(song, opts){
     const tx = document.createElement('span');
     tx.className = 'atx';
     if (kind === 'chord' || kind === 'section'){
+      // @ は目印なので色を付けず、その分だけ位置をずらして中身を見る
+      const sm = stripMark(line);
+      const base = sm.mark.length;
       let at = 0;
-      for (const t of tokenize(line)){
+      if (base){
+        const mk = document.createElement('span');
+        mk.className = 'at-m';
+        mk.textContent = sm.mark;
+        tx.appendChild(mk);
+        at = base;
+      }
+      for (const t0 of tokenize(sm.body)){
+        const t = {...t0, ci: t0.ci == null ? null : t0.ci + base};
         if (t.ci == null || t.ci < at) continue;
         // 元の行と1文字でも食い違うなら色を付けない（文字を書き換えないため）
         if (line.substr(t.ci, t.raw.length) !== t.raw) continue;
@@ -3073,7 +3246,7 @@ function renderAligned(song, opts){
         sp.className = 'at-' + c.kind;
         sp.textContent = t.raw;
         if (c.kind === 'c'){
-          const look = transposeChord(c.text, n);
+          const look = transposeChord(c.text, n, pref);
           sp.tabIndex = 0;
           sp.onclick = e=>{ e.stopPropagation(); showChord(look); };
           sp.onkeydown = e=>{ if (e.key === 'Enter'){ e.preventDefault(); showChord(look); } };
@@ -3172,6 +3345,13 @@ function saveEdit(){
   const id = editing; editing = null; openSong = id;
   render();
   alertShare('保存しました');
+}
+
+// 譜面のコードが「押さえる形」か「鳴る音」かを決める
+function setCapoBase(v){
+  const s = songs.find(x=>x.id===editing); if (!s) return;
+  s.capoBase = v === 'sound' ? 'sound' : 'play';
+  persist(); render();
 }
 
 // いまの編集内容を、元の版を残したまま別バージョンとして足す
@@ -3948,6 +4128,7 @@ async function takeFiles(fileList){
       title: p.title || f.name.replace(/\.[^.]+$/,''),
       artist: p.artist || '',
       vname: p.vname || '',
+      capoBase: p.capoBase || '',
       key: p.key, keyGuessed: !!p.keyGuessed, capo: p.capo || 0,
       bpm: p.bpm || 100, nChord:nC,
       nLyric: p.blocks.reduce((a,b)=>a+((b.lyrics||[]).length),0)});
@@ -4146,6 +4327,7 @@ function importBatch(){
     } else added++;
     songs.push({id, vgroup: grp,
       vname: mode === 'version' ? uniqueVersionName(grp, b.vname) : '',
+      ...(b.capoBase ? {capoBase: b.capoBase} : {}),
       folder:b.folder||'未分類', title:b.title,
       artist:b.artist||'', key:(b.key||'C').trim(), capo:b.capo||0,
       bpm:b.bpm||100, barsPerLine:8, transpose:0, plays:0, v:2, text:b.text});
