@@ -315,6 +315,9 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
   top:env(safe-area-inset-top,0px);z-index:5}
 
 .tidylist{max-height:46vh;overflow-y:auto;margin-bottom:4px}
+.buildline{margin-top:26px;text-align:center;font-size:.68rem;color:var(--fg-dim);
+  font-family:var(--font-mono);letter-spacing:.04em;opacity:.75}
+.buildline + .resetline{margin-top:8px}
 .resetline{margin-top:26px;text-align:center;display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
 .resetline button{font-size:.74rem;color:var(--fg-dim);padding:6px 12px;border-radius:7px;
   border:1px solid transparent}
@@ -1045,7 +1048,7 @@ function shiftRoot(root,n,flat){
   return (flat && FLATNAME[j]) ? FLATNAME[j] : SHARP[j];
 }
 // 元が ♭ で書いてあるか（b5 や b9 と間違えないよう、音名の直後だけを見る）
-function usesFlat(t){ return /^[A-G][b♭]/.test(String(t||'').trim()); }
+function usesFlat(t){ return /^[A-G][b\u266d\uff42]/.test(String(t||'').trim()); }
 // カポは弦の音を上げる道具。カポN で「押さえる形」は、鳴らしたいキーより N 低い形になる。
 //   鳴る音 Em ＋ カポ2  →  押さえ方 Dm
 //   鳴る音 C  ＋ カポ3  →  押さえ方 A
@@ -1098,20 +1101,34 @@ function isEasyKey(k){
   return EASY_KEYS.some(e=>e.toLowerCase() === t.toLowerCase());
 }
 
+// 音名に付く記号。全角の ＃ ♯ ♭ も同じ扱いにする（半角だけ見ていると取り残して二重になる）
+const ACC = '#b\u266f\u266d\uff03\uff42';
+const ACC_RE = new RegExp('^([A-G][' + ACC + ']?)');
 function transposeChord(ch,n,pref){
   if (!n) return ch;
-  // 「D//」のように後ろに付く拍の印は、動かさずに取っておく
-  const bm = /([\/|｜]+)$/.exec(ch);
+  // 「D//」のように後ろに付く拍の印は、動かさずに取っておく（全角のスラッシュも）
+  const bm = /([\/\uff0f|｜]+)$/.exec(ch);
   const beat = bm ? bm[1] : '';
   let out = bm ? ch.slice(0, ch.length - beat.length) : ch;
   // ♭ で書いてあれば ♭ のまま返す。書いていなくてもキーが ♭ 系なら ♭ で出す
   const flat = usesFlat(out) || !!pref;
-  const wide = /^[A-G]♭/.test(out);
-  const fix = r => wide ? r.replace(/b/g, '♭') : r;
-  out = out.replace(/^([A-G][#b♭♯]?)/, m=>fix(shiftRoot(m, n, flat)));
+  // 書いてあった記号と同じ字で返す（＃ で書いてあれば ＃ のまま）
+  const accM = out.match(new RegExp('^[A-G]([' + ACC + '])'));
+  const acc = accM ? accM[1] : '';
+  const fix = r => {
+    if (acc === '\uff03' || acc === '\u266f') return r.replace(/#/g, acc);
+    if (acc === '\u266d') return r.replace(/b/g, '\u266d');
+    return r;
+  };
+  out = out.replace(ACC_RE, m=>fix(shiftRoot(m, n, flat)));
   // 「/G」も「onG」も「on G」もベース音を動かす
-  out = out.replace(/(\/|\s*(?:on|ON|On|oN|オン)\s*)([A-G][#b♭♯]?)([)）]?)$/,
-    (m, sep, bb, tail)=>sep + fix(shiftRoot(bb, n, usesFlat(bb) || !!pref)) + tail);
+  out = out.replace(new RegExp('(\\/|\\s*(?:on|ON|On|oN|オン)\\s*)([A-G][' + ACC + ']?)([)）]?)$'),
+    (m, sep, bb, tail)=>{
+      const bAcc = (bb.match(new RegExp('^[A-G]([' + ACC + '])')) || [])[1] || '';
+      const bFix = r => (bAcc === '\uff03' || bAcc === '\u266f') ? r.replace(/#/g, bAcc)
+                      : bAcc === '\u266d' ? r.replace(/b/g, '\u266d') : r;
+      return sep + bFix(shiftRoot(bb, n, usesFlat(bb) || !!pref)) + tail;
+    });
   return out + beat;
 }
 
@@ -1611,6 +1628,9 @@ const FB_CONFIG = {
   appId: "1:413476757789:web:075eb4cfaac9a25fd041f4"
 };
 
+// このファイルの版。差し替えたかどうかの目印になる
+const APP_BUILD = '2026-11-03 17:04';
+
 let fb = null, fbUser = null, fbUnsub = null, syncState = 'off', pushTimer = null;
 let syncPaused = false;   // まとめ消しの最中だけ true。消しかけの状態が戻ってくるのを防ぐ
 
@@ -1631,7 +1651,7 @@ function initSync(){
   }catch(e){ showSyncError(e, '初期化'); }
 }
 
-let syncError = '', quotaFull = false;
+let syncError = '', quotaFull = false, quotaNote = '';
 
 function showSyncError(e, where){
   const code = (e && e.code) || '';
@@ -1683,7 +1703,15 @@ function startSync(){
     if (!remote.length && songs.length){
       pushAll();                                   // 初回: 手元の曲を上げる
     } else {
-      songs = remote;
+      // 端末だけで持っている項目（開いた回数・音源の有無）は残す
+      const keep = new Map(songs.map(x=>[x.id, x]));
+      songs = remote.map(r=>{
+        const old = keep.get(r.id);
+        if (!old) return r;
+        const mine = {};
+        LOCAL_ONLY.forEach(k=>{ if (old[k] !== undefined) mine[k] = old[k]; });
+        return {...r, ...mine};
+      });
       markPushed(songs);
       if (migrateSongs()) schedulePush();
       try{ localStorage.setItem('cn_songs', JSON.stringify(songs)); }catch(e){}
@@ -1712,7 +1740,15 @@ async function pushAll(){
 
 // 送信済みの内容を覚えておき、変わった曲だけ書き込む
 let pushed = new Map();   // id -> JSON文字列
-function snapOf(s){ const {id, ...rest} = s; return JSON.stringify(rest); }
+// クラウドに送らない項目。端末ごとに違ってよいものは外す。
+// （曲を開くたびに書き込みが走って、端末の控えが膨らむのを防ぐ）
+const LOCAL_ONLY = ['plays', 'lastOpen', 'hasAudio'];
+function forCloud(s){
+  const out = {};
+  for (const k in s){ if (k !== 'id' && !LOCAL_ONLY.includes(k)) out[k] = s[k]; }
+  return out;
+}
+function snapOf(s){ return JSON.stringify(forCloud(s)); }
 function markPushed(list){
   pushed = new Map(list.map(s=>[s.id, snapOf(s)]));
 }
@@ -1731,20 +1767,37 @@ function schedulePush(){
       const deletes = [...pushed.keys()].filter(id=>!nowIds.has(id));
       if (!writes.length && !deletes.length) return;
 
-      // 1回のまとめ書きは400件まで
+      // 1回のまとめ書きを小さくする（端末の控えが一度に膨らまないように）
       const ops = [...writes.map(w=>({t:'w', ...w})), ...deletes.map(id=>({t:'d', id}))];
-      for (let i = 0; i < ops.length; i += 400){
+      for (let i = 0; i < ops.length; i += 50){
         const b = fb.batch();
-        ops.slice(i, i + 400).forEach(o=>{
+        ops.slice(i, i + 50).forEach(o=>{
           if (o.t === 'd') b.delete(songsCol().doc(o.id));
-          else { const {id, ...rest} = o.song; b.set(songsCol().doc(id), rest, {merge:false}); }
+          else b.set(songsCol().doc(o.song.id), forCloud(o.song), {merge:false});
         });
         await b.commit();
       }
       writes.forEach(w=>pushed.set(w.id, w.json));
       deletes.forEach(id=>pushed.delete(id));
-    }catch(e){ showSyncError(e, '書き込み'); }
+    }catch(e){
+      showSyncError(e, '書き込み');
+      if (isQuotaError(e)) reportQuota();
+    }
   }, 900);
+}
+
+// 容量で失敗したとき、何がどれだけ場所を取っているかを調べて出す
+async function reportQuota(){
+  try{
+    const [info, list] = await Promise.all([storageInfo(), audioList()]);
+    const total = list.reduce((a,x)=>a+x.size, 0);
+    quotaNote = (info && info.quota
+        ? `この端末の使用 ${mb(info.usage)} / 上限 ${mb(info.quota)}。`
+        : '') +
+      (list.length ? `うち曲に付けた音源が ${list.length} 件・${mb(total)} あります。`
+                   : '音源は入っていません。');
+    renderSyncBar();
+  }catch(e){}
 }
 
 function renderSyncBar(){
@@ -1757,7 +1810,11 @@ function renderSyncBar(){
     ? `<div class="syncerr"><b>この端末の保存容量がいっぱいです</b>
         <p style="margin:6px 0 0;font-size:.82rem;line-height:1.6">
           譜面そのものは消えていません。曲に付けた音源が場所を取っていることが多いので、
-          下の「空き容量を見る」から音源を外すか、同期の控えを空にしてください。</p>
+          下の「空き容量を見る」から音源を外すか、オフライン用の控えを捨ててください。</p>
+        ${quotaNote ? `<p style="margin:4px 0 0;font-size:.82rem;line-height:1.6"><b>${esc(quotaNote)}</b></p>` : ''}
+        <p style="margin:4px 0 0;font-size:.8rem;line-height:1.6">
+          使用量が上限に届いていなくても、<b>パソコンの空きディスクが少ないと</b>同じエラーが出ます。
+          その場合はパソコン側の空き容量も確かめてください。</p>
         <button class="mini" onclick="openStorage()">空き容量を見る</button>
         <button class="mini" onclick="copyErr()">エラー内容をコピー</button>
         <details style="margin-top:7px"><summary style="font-size:.76rem;cursor:pointer">くわしい内容</summary>
@@ -2502,6 +2559,21 @@ function render(){
         <label style="display:block;font-size:.74rem;font-weight:700;letter-spacing:.05em;color:var(--fg-dim);margin-bottom:6px">コードを入れる</label>
         <div class="picker cp" id="palette"></div>
       </div>
+      <div class="card">
+        <label for="memoBox" style="display:block;font-size:.74rem;font-weight:700;letter-spacing:.05em;color:var(--fg-dim);margin-bottom:6px">メモを入れる</label>
+        <p class="sub" style="margin:0 0 8px">コード譜の<b>カーソルのところ</b>に差し込みます。コード行の途中でも、何もない行でも入ります。
+          括弧で囲んで入るので、コードとして読まれることはありません。</p>
+        <div class="mypk" style="width:100%">
+          <input type="text" id="memoBox" style="flex:1 1 auto;width:auto;min-width:0"
+            placeholder="例: 間奏ここだけ2回し"
+            onkeydown="if(event.key==='Enter'){event.preventDefault();insertMemo()}">
+          <button class="act" onclick="insertMemo()">入れる</button>
+        </div>
+        <div class="picker cp" style="margin-top:8px">${
+          ['2回し','くりかえし','ここから','ここまで','女性キー','1番だけ','2番だけ','半音下げ',
+           'イントロ','間奏','アウトロ','フェードアウト']
+          .map(m=>`<button class="pk sub" onclick="insertMemo('${m}')">${m}</button>`).join('')}</div>
+      </div>
       <p class="hint" style="margin:0 0 10px">左右は同じ文字・同じ桁で出しています。左の <b>＋</b> / <b>♪</b> で、その行をコード行か歌詞行かを切り替えられます。コード名を押すと押さえ方が出ます。</p>
       <div class="split">
         <div class="card sp-a">
@@ -2715,7 +2787,8 @@ function render(){
       </div>`;
     }
     if (!isViewer && !selectMode){
-      html += `<div class="resetline">
+      html += `<div class="buildline">版 ${APP_BUILD}</div>
+      <div class="resetline">
         <button onclick="openStorage()">端末の空き容量を見る</button>
         ${songs.length?`<button onclick="openTidy()">読み込み済みの曲を整理し直す</button>
         <button onclick="askResetAll()">すべての曲を消す</button>`:''}</div>`;
@@ -2839,6 +2912,16 @@ function render(){
           <div class="picker cp" style="margin-top:7px">${opts.slice(0,10).map(f=>
             `<button class="pk sub" onclick="document.getElementById('bFolder').value='${esc(f)}'">${esc(f)}</button>`
           ).join('')}</div></div>
+      </div>
+      <div class="card">
+        <label for="memoBox" style="display:block;font-size:.74rem;font-weight:700;letter-spacing:.05em;color:var(--fg-dim);margin-bottom:6px">メモを入れる</label>
+        <div class="mypk" style="width:100%">
+          <input type="text" id="memoBox" style="flex:1 1 auto;width:auto;min-width:0"
+            placeholder="例: 間奏ここだけ2回し"
+            onkeydown="if(event.key==='Enter'){event.preventDefault();insertMemo()}">
+          <button class="act" onclick="insertMemo()">入れる</button>
+        </div>
+        <p class="hint" style="margin-top:6px">コード譜のカーソルのところに、括弧で囲んで差し込みます。</p>
       </div>
       <p class="hint" style="margin:0 0 10px">左右は同じ文字・同じ桁で出しています。左の <b>＋</b> / <b>♪</b> で、その行をコード行か歌詞行かを切り替えられます。</p>
       <div class="split">
@@ -3221,20 +3304,29 @@ function renderAligned(song, opts){
   lines.forEach((line, i)=>{
     const row = document.createElement('div');
     row.className = 'arow';
-    const kind = line.trim() ? lineKind(line) : 'blank';
+    let kind = line.trim() ? lineKind(line) : 'blank';
+    // 括弧だけの行（メモ）は、歌詞ではなくメモとして薄く出す
+    if (kind === 'lyric' && /^[\s\u3000]*[(（][^)）]*[)）][\s\u3000]*$/.test(line)) kind = 'memo';
     if (opts.lineToggle)
       row.appendChild(toggleBtn(i, kind === 'chord', opts.lineToggle, line));
     const tx = document.createElement('span');
     tx.className = 'atx';
-    if (kind === 'chord' || kind === 'section'){
+    if (kind === 'memo'){
+      const sp = document.createElement('span');
+      sp.className = 'at-n';
+      sp.textContent = line;
+      tx.appendChild(sp);
+    } else if (kind === 'chord' || kind === 'section'){
       // @ は目印なので色を付けず、その分だけ位置をずらして中身を見る
       const sm = stripMark(line);
       const base = sm.mark.length;
       let at = 0;
       if (base){
+        // ＠ は「この行はコード行」という目印なので、字は出さずに幅だけ空けておく。
+        // コード行であることは左の ♪ で分かる
         const mk = document.createElement('span');
         mk.className = 'at-m';
-        mk.textContent = sm.mark;
+        mk.textContent = sm.mark.replace(/[@＠]/, c=>c === '＠' ? '\u3000' : ' ');
         tx.appendChild(mk);
         at = base;
       }
@@ -3349,6 +3441,34 @@ function saveEdit(){
   const id = editing; editing = null; openSong = id;
   render();
   alertShare('保存しました');
+}
+
+// コード譜のカーソル位置にメモを差し込む。括弧で囲むのでコードとは読まれない
+function insertMemo(text){
+  const ta = document.getElementById('eText') || document.getElementById('bText');
+  if (!ta) return;
+  const box = document.getElementById('memoBox');
+  let t = String(text != null ? text : (box ? box.value : '')).trim();
+  if (!t){ alertShare('入れたい内容を書いてください'); return; }
+  // すでに括弧で囲まれていれば二重にしない
+  if (!/^[(（][\s\S]*[)）]$/.test(t)) t = '（' + t + '）';
+
+  const v = ta.value;
+  let a = ta.selectionStart, b = ta.selectionEnd;
+  if (a == null){ a = b = v.length; }
+  // 選んでいる範囲があれば、それを置き換える
+  let before = v.slice(0, a), after = v.slice(b);
+  // コードや文字にくっつかないよう、前後に空白を1つずつ足す
+  const pad0 = before && !/[\s\u3000]$/.test(before) ? ' ' : '';
+  const pad1 = after && !/^[\s\u3000\n]/.test(after) ? ' ' : '';
+  const ins = pad0 + t + pad1;
+  ta.value = before + ins + after;
+  const pos = a + ins.length;
+  ta.focus();
+  ta.setSelectionRange(pos, pos);
+  ta.dispatchEvent(new Event('input', {bubbles:true}));
+  if (box && text == null) box.value = '';
+  alertShare('メモを入れました');
 }
 
 // 譜面のコードが「押さえる形」か「鳴る音」かを決める
@@ -5216,7 +5336,11 @@ window.addEventListener('resize', ()=>{
   }, 160);
 });
 
-if (!isViewer) render();
+if (!isViewer){
+  render();
+  // 差し替えたかどうかが分かるように、開いたときに版を出す
+  setTimeout(()=>alertShare('コード譜ノート 版 ' + APP_BUILD), 400);
+}
 </script>
 </body>
 </html>
