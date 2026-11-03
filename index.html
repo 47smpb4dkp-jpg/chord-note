@@ -1773,7 +1773,7 @@ const FB_CONFIG = {
 };
 
 // このファイルの版。差し替えたかどうかの目印になる
-const APP_BUILD = '2026-11-03 22:11';
+const APP_BUILD = '2026-11-03 22:35';
 
 let fb = null, fbUser = null, fbUnsub = null, syncState = 'off', pushTimer = null;
 let syncPaused = false;   // まとめ消しの最中だけ true。消しかけの状態が戻ってくるのを防ぐ
@@ -1805,6 +1805,8 @@ function initSync(){
 
 let syncError = '', quotaFull = false, quotaNote = '';
 let offlineState = '';
+// 控えを捨てる・設定を変えるために閉じている最中かどうか。この間のエラーは出さない
+let tearingDown = false;
 
 /* ---- オフライン用の控えを使うかどうか ---- */
 const OFFLINE_KEY = 'cn_offline';
@@ -1815,6 +1817,9 @@ function offlineWanted(){
 async function disableOffline(){
   try{ localStorage.setItem(OFFLINE_KEY, 'off'); }catch(e){}
   alertShare('控えを使わない設定にしました。開き直します');
+  tearingDown = true;
+  try{ if (fbUnsub){ fbUnsub(); fbUnsub = null; } }catch(e){}
+  try{ if (metaUnsub){ metaUnsub(); metaUnsub = null; } }catch(e){}
   try{
     if (fb && typeof fb.terminate === 'function') await fb.terminate();
     if (fb && typeof fb.clearPersistence === 'function') await fb.clearPersistence();
@@ -1864,9 +1869,15 @@ async function diagWrite(){
   }
   lines.push(verdict);
   const bad = /できなかった/.test(verdict);
+  const off = !offlineWanted();
   lines.push(bad
-    ? '→ この端末そのものが書き込めない状態です。パソコンの空きディスクを増やすか、下の「控えを使わない」を試してください。'
-    : '→ 端末は書き込めています。控えが大きくなりすぎている可能性があるので、控えを捨てるか、使わない設定にしてください。');
+    ? (off
+? '→ 控えを使わない設定なのに書き込めません。パソコンの空きディスクを増やしてください。'
+: '→ 書き込めません。「控えを使わない設定にする」を試してください。それで書けるなら原因は控えです。')
+    : (off
+? '→ 書き込めています。控えを使わない設定なので、容量のエラーはもう出ないはずです。このまま使えます。'
+: '→ 端末は書き込めます。控えが壊れているか大きすぎる可能性があるので、控えを捨てるか、使わない設定にしてください。'));
+  lines.push('※ 上の「使用」の数字は、壊れた控えが残っていると実際と合わないことがあります。');
   if (box) box.innerHTML = `<div class="syncerr" style="margin-top:10px">
     <b>調べた結果</b><code id="diagCode">${esc(lines.join('\n'))}</code>
     <div class="btnrow" style="margin-top:2px">
@@ -1877,6 +1888,10 @@ async function diagWrite(){
 function showSyncError(e, where){
   const code = (e && e.code) || '';
   const msg  = (e && e.message) || String(e);
+  // こちらが閉じたことによるエラーは、出しても意味がないので黙っておく
+  if (tearingDown || /shutting down|terminated|aborted/i.test(code + ' ' + msg)){
+    if (tearingDown) return;
+  }
   syncError = where + ' / ' + (code || '(コードなし)') + ' / ' + msg;
   if (isQuotaError(e)) quotaFull = true;
   syncState = 'error';
@@ -2255,6 +2270,276 @@ async function loadShare(id){
   }
 }
 
+/* ============ 4.8 Google ドライブへのバックアップ ============ */
+/* 普段の読み書きは Firebase。ドライブには保存のたびに .md を書き出して、
+   自分で見られる控え（正本）を置いておく。
+   アプリが触れるのは自分で作ったファイルだけ（drive.file の権限）。 */
+const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+const DRIVE_ROOT  = 'コードノート';
+let driveToken = null;          // アクセス用の鍵。1時間ほどで切れる
+let driveRootId = null;
+let driveState  = 'off';        // off / on / error
+let driveError  = '';
+let driveBusy   = false;
+let driveTimer  = null;
+let drivePushed = new Map();    // 書き出し済みの内容。変わった曲だけ送る
+
+function driveWanted(){
+  try{ return localStorage.getItem('cn_drive') === 'on'; }catch(e){ return false; }
+}
+function rememberDriveToken(t){
+  driveToken = t || null;
+  try{
+    if (t) sessionStorage.setItem('cn_drive_tok', t);
+    else sessionStorage.removeItem('cn_drive_tok');
+  }catch(e){}
+}
+function restoreDriveToken(){
+  try{ driveToken = sessionStorage.getItem('cn_drive_tok') || null; }catch(e){ driveToken = null; }
+  if (driveToken && driveWanted()) driveState = 'on';
+}
+
+// ドライブにつなぐ。Google のログイン画面が1回出る
+async function connectDrive(){
+  if (typeof firebase === 'undefined'){ alertShare('この環境では使えません'); return; }
+  try{
+    const provider = new firebase.auth.GoogleAuthProvider();
+    provider.addScope(DRIVE_SCOPE);
+    const res = await firebase.auth().signInWithPopup(provider);
+    const tok = res && res.credential && res.credential.accessToken;
+    if (!tok) throw new Error('鍵を受け取れませんでした');
+    rememberDriveToken(tok);
+    try{ localStorage.setItem('cn_drive', 'on'); }catch(e){}
+    driveState = 'on'; driveError = '';
+    driveRootId = null;
+    await driveFindRoot();
+    alertShare('ドライブにつながりました');
+    drawDrive();
+    scheduleDriveBackup(true);
+  }catch(e){
+    driveState = 'error';
+    driveError = ((e && (e.code || e.name)) || '') + ' ' + ((e && e.message) || String(e));
+    drawDrive();
+  }
+}
+function disconnectDrive(){
+  try{ localStorage.setItem('cn_drive', 'off'); }catch(e){}
+  rememberDriveToken(null);
+  driveState = 'off'; driveError = ''; driveRootId = null;
+  drivePushed = new Map();
+  alertShare('ドライブとの連携をやめました');
+  drawDrive();
+}
+
+// ドライブへの問い合わせ。鍵が切れていたら分かるようにする
+async function driveFetch(url, opts){
+  if (!driveToken) throw new Error('まだドライブにつないでいません');
+  const o = Object.assign({}, opts || {});
+  o.headers = Object.assign({Authorization: 'Bearer ' + driveToken}, o.headers || {});
+  const r = await fetch(url, o);
+  if (r.status === 401 || r.status === 403){
+    rememberDriveToken(null);
+    driveState = 'error';
+    driveError = 'つなぎ直しが要ります（鍵の期限切れ）';
+    throw new Error('EXPIRED');
+  }
+  if (!r.ok){
+    let t = '';
+    try{ t = (await r.json()).error.message; }catch(e){ t = r.status + ''; }
+    throw new Error(t);
+  }
+  return r.json();
+}
+
+// フォルダを探す。無ければ作る
+async function driveFolder(name, parentId){
+  const q = encodeURIComponent(
+    `name='${name.replace(/'/g, "\\'")}' and mimeType='application/vnd.google-apps.folder'` +
+    ` and '${parentId}' in parents and trashed=false`);
+  const found = await driveFetch(
+    'https://www.googleapis.com/drive/v3/files?q=' + q + '&fields=files(id,name)&pageSize=1');
+  if (found.files && found.files.length) return found.files[0].id;
+  const made = await driveFetch('https://www.googleapis.com/drive/v3/files?fields=id', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name, mimeType: 'application/vnd.google-apps.folder', parents: [parentId]})
+  });
+  return made.id;
+}
+async function driveFindRoot(){
+  if (driveRootId) return driveRootId;
+  driveRootId = await driveFolder(DRIVE_ROOT, 'root');
+  return driveRootId;
+}
+
+// 同じ名前のファイルを探す（あれば中身を差し替える）
+async function driveFindFile(name, parentId){
+  const q = encodeURIComponent(
+    `name='${name.replace(/'/g, "\\'")}' and '${parentId}' in parents and trashed=false`);
+  const r = await driveFetch(
+    'https://www.googleapis.com/drive/v3/files?q=' + q + '&fields=files(id,name)&pageSize=1');
+  return (r.files && r.files[0]) ? r.files[0].id : null;
+}
+
+// 1曲を .md として書き出す
+async function drivePutSong(s, parentId){
+  const name = exportFileName(s) + '.md';
+  const body = songToMd(s);
+  const id = await driveFindFile(name, parentId);
+  const meta = id ? {} : {name, parents: [parentId]};
+  const boundary = '-----cn' + Date.now();
+  const payload =
+    '--' + boundary + '\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n' +
+    JSON.stringify(meta) + '\r\n' +
+    '--' + boundary + '\r\nContent-Type: text/markdown; charset=UTF-8\r\n\r\n' +
+    body + '\r\n--' + boundary + '--';
+  const url = 'https://www.googleapis.com/upload/drive/v3/files' +
+    (id ? '/' + id + '?uploadType=multipart&fields=id' : '?uploadType=multipart&fields=id');
+  await driveFetch(url, {
+    method: id ? 'PATCH' : 'POST',
+    headers: {'Content-Type': 'multipart/related; boundary=' + boundary},
+    body: payload
+  });
+}
+
+function driveSnap(s){ return songToMd(s).replace(/^updated:.*$/m, ''); }
+
+// 変わった曲だけドライブへ送る
+async function runDriveBackup(all){
+  if (driveBusy || driveState !== 'on' || isViewer || !songs.length) return;
+  driveBusy = true;
+  let done = 0, failed = 0;
+  try{
+    const root = await driveFindRoot();
+    const folders = {};
+    for (const s of songs){
+      const snap = driveSnap(s);
+      if (!all && drivePushed.get(s.id) === snap) continue;
+      const g = (s.folder || '未分類').trim() || '未分類';
+      if (!folders[g]) folders[g] = await driveFolder(safeName(g), root);
+      try{
+        await drivePutSong(s, folders[g]);
+        drivePushed.set(s.id, snap);
+        done++;
+      }catch(e){
+        if ((e && e.message) === 'EXPIRED') throw e;
+        lastDriveErr = (e && e.message) || String(e);
+        failed++;
+      }
+    }
+    driveError = failed ? failed + ' 曲を書き出せませんでした（' + lastDriveErr + '）' : '';
+    if (done) driveLastAt = Date.now();
+  }catch(e){
+    if ((e && e.message) !== 'EXPIRED'){
+      driveState = 'error';
+      driveError = (e && e.message) || String(e);
+    }
+  }
+  driveBusy = false;
+  drawDrive();
+}
+let driveLastAt = 0, lastDriveErr = '';
+function scheduleDriveBackup(all){
+  if (driveState !== 'on') return;
+  clearTimeout(driveTimer);
+  driveTimer = setTimeout(()=>runDriveBackup(!!all), all ? 300 : 8000);
+}
+
+// ドライブから読み戻す
+async function driveRestore(){
+  if (driveState !== 'on'){ alertShare('先にドライブにつないでください'); return; }
+  const box = document.getElementById('driveMsg');
+  if (box) box.innerHTML = '<p class="hint" style="margin:8px 0 0">ドライブを見ています…</p>';
+  try{
+    const root = await driveFindRoot();
+    // フォルダ（ジャンル）を全部拾う
+    const dirs = await driveFetch('https://www.googleapis.com/drive/v3/files?q=' +
+      encodeURIComponent(`'${root}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`) +
+      '&fields=files(id,name)&pageSize=200');
+    const found = [];
+    const scan = async (id, genre)=>{
+      let token = '';
+      do {
+        const r = await driveFetch('https://www.googleapis.com/drive/v3/files?q=' +
+          encodeURIComponent(`'${id}' in parents and trashed=false and mimeType!='application/vnd.google-apps.folder'`) +
+          '&fields=nextPageToken,files(id,name)&pageSize=200' + (token ? '&pageToken=' + token : ''));
+        (r.files || []).forEach(f=>{ if (/\.md$/i.test(f.name)) found.push({...f, genre}); });
+        token = r.nextPageToken || '';
+      } while (token);
+    };
+    await scan(root, '');
+    for (const d of (dirs.files || [])) await scan(d.id, d.name);
+    if (!found.length){
+      showBoxError('driveMsg', 'ドライブに譜面が見つかりませんでした',
+        'フォルダ「' + DRIVE_ROOT + '」の中に .md がありません。');
+      return;
+    }
+    // 中身を読み込んで、取り込み候補として一覧に並べる
+    const out = [];
+    for (const f of found){
+      try{
+        const r = await fetch('https://www.googleapis.com/drive/v3/files/' + f.id + '?alt=media',
+          {headers: {Authorization: 'Bearer ' + driveToken}});
+        const text = await r.text();
+        if (!text.trim()) continue;
+        const p = parseSheet(text);
+        out.push({name: f.name, ok: true, pick: true,
+          text: p.body || text,
+          folder: p.folder || f.genre || '取り込み',
+          title: p.title || f.name.replace(/\.[^.]+$/, ''),
+          artist: p.artist || '', vname: p.vname || '', capoBase: p.capoBase || '',
+          key: p.key, keyGuessed: !!p.keyGuessed, capo: p.capo || 0,
+          bpm: p.bpm || 100,
+          nChord: p.blocks.filter(b=>(b.chords||[]).length).length,
+          nLyric: p.blocks.reduce((a,b)=>a+((b.lyrics||[]).length), 0)});
+      }catch(e){ out.push({name: f.name, ok: false, why: (e.message||'読めません').slice(0,40)}); }
+    }
+    batch = out;
+    checkBatchDup();
+    if (box) box.innerHTML = '';
+    storageOpen = false;
+    go('new');
+    setTimeout(()=>{
+      drawBatch();
+      const el = document.getElementById('batchOut');
+      if (el) el.scrollIntoView({behavior:'smooth', block:'start'});
+    }, 60);
+    alertShare('ドライブから ' + out.length + ' 曲を読みました。取り込む曲を選んでください');
+  }catch(e){
+    showBoxError('driveMsg', 'ドライブから読めませんでした', (e && e.message) || String(e),
+      (e && e.message) === 'EXPIRED' ? 'もう一度「ドライブにつなぐ」を押してください。' : '');
+  }
+}
+
+function drawDrive(){
+  const box = document.getElementById('driveBox');
+  if (!box) return;
+  const on = driveState === 'on';
+  const when = driveLastAt ? new Date(driveLastAt).toLocaleString('ja-JP',
+    {month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit'}) : '';
+  box.innerHTML = `
+    <div class="syncbar" style="margin:0 0 10px">
+      <span class="sdot ${on?'ok':(driveState==='error'?'err':'')}"></span>
+      ${on ? 'ドライブにバックアップ中' : driveState==='error' ? 'ドライブでつまずいています' : 'ドライブは使っていません'}
+      ${when ? `<span class="who">最後: ${esc(when)}</span>` : ''}
+    </div>
+    <p class="sub">マイドライブの中に「<b>${DRIVE_ROOT}</b>」というフォルダを作って、
+      ジャンルごとに曲を <b>.md</b> で置いていきます。ドライブのほかの中身は見ません。
+      普段の同期は今までどおり Firebase が担当し、ドライブは<b>自分で見られる控え</b>です。</p>
+    <div class="btnrow">
+      ${on
+        ? `<button class="ghost" onclick="runDriveBackup(true)" ${driveBusy?'disabled':''}>いますぐ全部書き出す</button>
+           <button class="ghost" onclick="driveRestore()" ${driveBusy?'disabled':''}>ドライブから読み戻す</button>
+           <button class="ghost danger" onclick="disconnectDrive()">連携をやめる</button>`
+        : `<button class="act" onclick="connectDrive()">ドライブにつなぐ</button>`}
+    </div>
+    ${driveBusy ? '<p class="hint" style="margin-top:8px">書き出しています…</p>' : ''}
+    ${driveError ? `<div class="syncerr" style="margin-top:10px"><b>${esc(driveError)}</b>
+      ${/鍵の期限/.test(driveError) ? '<p style="margin:2px 0 0;font-size:.8rem">「ドライブにつなぐ」をもう一度押すと直ります。</p>' : ''}
+      </div>` : ''}
+    <div id="driveMsg"></div>`;
+}
+
 /* ============ 5. 状態 ============ */
 let songs = SAMPLES.map(s=>({...s, transpose:0}));
 let playlists = [];          // [{id, name, songs:[songId]}]
@@ -2353,6 +2638,7 @@ function persist(){
   try{ localStorage.setItem('cn_songs', JSON.stringify(songs)); }catch(e){}
   schedulePush();
   scheduleShareRefresh();
+  scheduleDriveBackup(false);
 }
 // 開いた回数など、譜面の中身に関係ない保存。共有の貼り直しはしない
 function persistCount(){
@@ -4939,7 +5225,7 @@ async function drawStorage(){
           ${orphans.length?`<button class="ghost" onclick="dropAudioAll(true)">いらない音源だけ外す（${orphans.length}件）</button>`:''}
           <button class="ghost danger" onclick="dropAudioAll(false)">音源をぜんぶ外す</button></div>`
       : `<p class="hint" style="margin:0">音源は入っていません。</p>`}
-    <div class="secthead" style="margin-top:20px">オフライン用の控え</div>
+    <div class="secthead" style="margin-top:20px">端末に保存（オフライン用）</div>
     <p class="sub">圏外でも譜面を開けるように、クラウドにある内容の<b>コピーをこの端末にも置いて</b>います。
       これを捨てても、<b>クラウド側の譜面は消えません</b>。次にネットにつないだときに降りてきます。
       場所が足りないときや、表示がおかしいときに試してください。</p>
@@ -4953,13 +5239,19 @@ async function drawStorage(){
       「使わない」にすると、この端末に控えを置かなくなるので<b>容量のエラーが出なくなります</b>。
       そのかわり<b>圏外では譜面を開けません</b>（ネットにつながっていれば今までどおり使えます）。</p>
     <div id="cacheMsg"></div>
-    <div class="secthead" style="margin-top:20px">うまくいかないとき</div>
+    <div class="secthead" style="margin-top:22px">Google ドライブへのバックアップ</div>
+    <div id="driveBox"></div>
+    <div class="secthead" style="margin-top:22px">うまくいかないとき</div>
     <p class="sub">容量のエラーが続くときは、何が原因か調べられます。</p>
     <div class="btnrow"><button class="ghost" onclick="diagWrite()">書き込めるか調べる</button></div>
     <div id="diagOut"></div>
     <p class="hint" style="margin-top:14px">音源はこの端末にだけ置いてあり、ほかの端末には同期されません。
       外しても譜面は残ります。元の音源ファイルが手元にあれば、曲画面から付け直せます。</p>`;
 }
+
+// 空き容量の画面を描いたあとに、ドライブの欄も描く
+const _drawStorage0 = drawStorage;
+drawStorage = async function(){ await _drawStorage0.apply(this, arguments); drawDrive(); };
 
 async function dropAudio(id){
   await delAudio(id);
@@ -5006,6 +5298,11 @@ async function clearCache(){
   const log = [];
   const box = document.getElementById('cacheMsg');
   if (box) box.innerHTML = '<p class="hint" style="margin:8px 0 0">捨てています…</p>';
+  // 先に受け取りを止める。止めずに閉じると「shutting down」のエラーが出る
+  tearingDown = true;
+  try{ if (fbUnsub){ fbUnsub(); fbUnsub = null; } }catch(e){}
+  try{ if (metaUnsub){ metaUnsub(); metaUnsub = null; } }catch(e){}
+  clearTimeout(pushTimer);
   // まずは正規の手順で
   try{
     if (fb){
@@ -5023,7 +5320,10 @@ async function clearCache(){
     if (indexedDB.databases){
       names = (await indexedDB.databases()).map(d=>d && d.name).filter(Boolean);
     }
-    const targets = names.filter(nm=>/^firestore\b|^firebase-/i.test(nm));
+    // 控えそのものだけを対象にする。
+    // firebase-heartbeat-database は Firebase が開きっぱなしにしている別物で、
+    // 消す必要も無いし消せないので外す
+    const targets = names.filter(nm=>/^firestore\b/i.test(nm));
     for (const nm of targets){
       const done = await new Promise(res=>{
         const rq = indexedDB.deleteDatabase(nm);
@@ -5651,6 +5951,7 @@ window.addEventListener('resize', ()=>{
   }, 160);
 });
 
+restoreDriveToken();
 if (!isViewer){
   render();
   // 差し替えたかどうかが分かるように、開いたときに版を出す
