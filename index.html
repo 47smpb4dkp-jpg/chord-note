@@ -1151,6 +1151,7 @@ const FB_CONFIG = {
 };
 
 let fb = null, fbUser = null, fbUnsub = null, syncState = 'off', pushTimer = null;
+let syncPaused = false;   // まとめ消しの最中だけ true。消しかけの状態が戻ってくるのを防ぐ
 
 function initSync(){
   if (typeof firebase === 'undefined') { syncState = 'unavailable'; return; }
@@ -1215,6 +1216,7 @@ function startSync(){
   startMetaSync();
   if (fbUnsub) fbUnsub();
   fbUnsub = songsCol().onSnapshot(snap=>{
+    if (syncPaused) return;                       // まとめ消しの途中は受け取らない
     if (snap.metadata.hasPendingWrites) return;   // 自分が書いた分の返りは無視
     const remote = snap.docs.map(d=>({...d.data(), id:d.id}));
     if (!remote.length && songs.length){
@@ -2433,15 +2435,15 @@ function render(){
         <h2>フォルダから一括読み込み</h2>
         <p class="sub">コード譜を入れてあるフォルダを丸ごと選ぶと、中のファイルをまとめて読み取ります。フォルダ名はジャンルとして引き継ぎます。あとでまとめて変えられます。</p>
         <div class="drop" id="dropZone">
-          <p>ここにファイルやフォルダをドラッグ<br><span style="font-size:.74rem">.md / .txt / .doc / .docx / .pdf / 画像</span></p>
+          <p>ここにファイルやフォルダをドラッグ<br><span style="font-size:.74rem">.md / .txt / .doc / .docx / .pdf / 画像 / .zip</span></p>
           <div class="btnrow" style="justify-content:center">
             <button class="ghost" onclick="document.getElementById('pickDir').click()">フォルダを選ぶ</button>
             <button class="ghost" onclick="document.getElementById('pickFiles').click()">ファイルを選ぶ</button>
           </div>
         </div>
         <input type="file" id="pickDir" webkitdirectory directory multiple hidden onchange="takeFiles(this.files)">
-        <input type="file" id="pickFiles" multiple hidden accept=".md,.txt,.doc,.docx,.pdf,.jpg,.jpeg,.png,.gif,.bmp,.webp" onchange="takeFiles(this.files)">
-        <p class="hint">読めるのは .md / .txt / .doc / .docx / .pdf と画像です。1曲だけ中身を見ながら直したいときは、上の「ファイルから作る」の「ファイルを1つ読み込む」を使ってください。<br>
+        <input type="file" id="pickFiles" multiple hidden accept=".md,.txt,.doc,.docx,.pdf,.jpg,.jpeg,.png,.gif,.bmp,.webp,.zip" onchange="takeFiles(this.files)">
+        <p class="hint">読めるのは .md / .txt / .doc / .docx / .pdf と画像、それに <b>.zip</b> です。ZIP は中を開いて、フォルダごと読み込んだときと同じように並べます。1曲だけ中身を見ながら直したいときは、上の「ファイルから作る」の「ファイルを1つ読み込む」を使ってください。<br>
           画像からの読み取りは間違いが混ざります。読み込んだあと必ず確認してください。</p>
         <div id="batchOut"></div>
       </div>
@@ -2800,6 +2802,38 @@ function saveAsVersion(){
 }
 
 /* ---- 削除 ---- */
+// クラウド側の曲を少しずつ消す。1回に送る数を抑え、失敗した分は入れ直して3回まで試す
+async function deleteRemote(ids, onProgress){
+  if (!fb || !fbUser || !ids.length) return {done:0, left:0, error:null};
+  const CHUNK = 80;
+  let done = 0, error = null;
+  let rest = [...new Set(ids)];
+  const total = rest.length;
+  for (let pass = 0; pass < 3 && rest.length; pass++){
+    const failed = [];
+    for (let i = 0; i < rest.length; i += CHUNK){
+      const part = rest.slice(i, i + CHUNK);
+      try{
+        const b = fb.batch();
+        part.forEach(id=>b.delete(songsCol().doc(id)));
+        await b.commit();
+        done += part.length;
+        part.forEach(id=>pushed.delete(id));
+        if (onProgress) onProgress(done, total);
+      }catch(e){ error = e; failed.push(...part); }
+    }
+    rest = failed;
+    if (rest.length) await new Promise(r=>setTimeout(r, 900));
+  }
+  return {done, left: rest.length, error};
+}
+// 本当に消えたか、サーバーに聞いて確かめる
+async function remoteCount(){
+  if (!fb || !fbUser) return 0;
+  try{ const snap = await songsCol().get({source:'server'}); return snap.size; }
+  catch(e){ try{ return (await songsCol().get()).size; }catch(e2){ return -1; } }
+}
+
 let pendingDelete = null;
 function askDelete(id){
   const s = songs.find(x=>x.id===id); if (!s) return;
@@ -2827,20 +2861,24 @@ async function doDelete(){
   playlists.forEach(pl=>{ pl.songs = pl.songs.filter(id=>!ids.has(id)); });
   persistMeta();
   ids.forEach(id=>delAudio(id));
-  if (fb && fbUser){
-    try{
-      const batch2 = fb.batch();
-      ids.forEach(id=>batch2.delete(songsCol().doc(id)));
-      await batch2.commit();
-    }catch(e){}
-  }
-  persist();
+  const list = [...ids];
   pendingDelete = null;
   editing = null; openSong = null;
   selectMode = false; selected.clear();
   closePop();
   render();
-  alertShare('削除しました');
+  if (fb && fbUser){
+    syncPaused = true;
+    try{
+      list.forEach(id=>pushed.delete(id));
+      const r = await deleteRemote(list);
+      if (r.left){
+        showSyncError(r.error || new Error('削除しきれませんでした'), '削除');
+        alertShare(r.left + '曲が消しきれませんでした');
+      } else alertShare('削除しました');
+    } finally { syncPaused = false; }
+  } else alertShare('削除しました');
+  persist();
 }
 
 /* ---- まとめて選ぶ ---- */
@@ -2977,30 +3015,67 @@ function askResetAll(){
         <button class="ghost" onclick="closePop()">やめる</button></div></div>`;
   document.getElementById('pop').hidden = false;
 }
+function resetProgress(txt){
+  const el = document.getElementById('resetProg');
+  if (el) el.textContent = txt;
+}
 async function doResetAll(){
   const w = document.getElementById('resetWord');
   if (!w || w.value.trim() !== '消す'){ alertShare('「消す」と入力してください'); return; }
-  const ids = songs.map(x=>x.id);
-  songs = []; playlists = []; openList = null;
-  selectMode = false; selected.clear();
-  editing = null; openSong = null; folderFilter = null;
-  ids.forEach(id=>delAudio(id));
-  try{ localStorage.removeItem('cn_songs'); localStorage.removeItem('cn_playlist'); }catch(e){}
-  persist(); persistMeta();
-  if (fb && fbUser){
-    try{
-      const snap = await songsCol().get();
-      // まとめて消す（1回あたり400件まで）
-      for (let i = 0; i < snap.docs.length; i += 400){
-        const b = fb.batch();
-        snap.docs.slice(i, i + 400).forEach(d=>b.delete(d.ref));
-        await b.commit();
+
+  // 消している間は押せないようにして、進み具合を出す
+  document.getElementById('popGrid').innerHTML =
+    `<div style="flex:1 1 100%"><p id="resetProg" style="margin:0">消しています…</p></div>`;
+
+  syncPaused = true;
+  let left = 0, err = null;
+  try{
+    // 手元に無くてもクラウドに残っている分まで拾う
+    let ids = songs.map(x=>x.id);
+    if (fb && fbUser){
+      try{
+        const snap = await songsCol().get();
+        ids = [...new Set([...ids, ...snap.docs.map(d=>d.id)])];
+      }catch(e){}
+    }
+    songs = []; playlists = []; openList = null;
+    selectMode = false; selected.clear();
+    editing = null; openSong = null; folderFilter = null;
+    navIds = []; listOrder = []; plOrder = [];
+    pushed = new Map();                 // 二重に消しにいかないようにする
+    ids.forEach(id=>delAudio(id));
+    try{ localStorage.removeItem('cn_songs'); localStorage.removeItem('cn_playlist'); }catch(e){}
+    persistMeta();
+
+    if (fb && fbUser && ids.length){
+      resetProgress(`消しています… 0 / ${ids.length}`);
+      const r = await deleteRemote(ids, (d,t)=>resetProgress(`消しています… ${d} / ${t}`));
+      err = r.error;
+      left = r.left;
+      // 本当に空になったか、サーバーに聞いて確かめる
+      resetProgress('確かめています…');
+      let n = await remoteCount();
+      if (n > 0){
+        const snap = await songsCol().get({source:'server'}).catch(()=>null);
+        if (snap){
+          const r2 = await deleteRemote(snap.docs.map(d=>d.id),
+            (d,t)=>resetProgress(`残りを消しています… ${d} / ${t}`));
+          err = r2.error || err;
+          n = await remoteCount();
+        }
       }
-      pushed = new Map();
-    }catch(e){ showSyncError(e, '全消去'); }
+      left = n > 0 ? n : (n < 0 ? left : 0);
+    }
+  } finally {
+    syncPaused = false;
   }
   closePop(); render();
-  alertShare('すべて消しました');
+  if (left > 0){
+    if (err) showSyncError(err, '全消去');
+    alertShare(left + '曲が消しきれませんでした。もう一度「すべて消す」を押してください');
+  } else {
+    alertShare('すべて消しました');
+  }
 }
 
 /* ---- セットリスト ---- */
@@ -3380,8 +3455,62 @@ async function readDocx(file){
   return out.join('\n').replace(/\t/g, '\u3000\u3000');
 }
 
+// ZIP の中から、読めるファイルだけを取り出して普通のファイルと同じ形にする
+const READABLE = /\.(md|txt|doc|docx|dot|pdf|jpe?g|png|gif|bmp|webp)$/i;
+async function openZip(file){
+  if (typeof JSZip === 'undefined') throw new Error('展開の準備ができていません');
+  const zip = await JSZip.loadAsync(file);
+  const base = file.name.replace(/\.zip$/i, '');
+  const out = [];
+  const names = Object.keys(zip.files).sort();
+  for (const name of names){
+    const entry = zip.files[name];
+    if (entry.dir) continue;
+    const leaf = name.split('/').pop();
+    // Mac で作った ZIP に混ざる管理用ファイルは飛ばす
+    if (!leaf || leaf.startsWith('.') || leaf.startsWith('._')) continue;
+    if (name.startsWith('__MACOSX/')) continue;
+    if (!READABLE.test(leaf)) continue;
+    const blob = await entry.async('blob');
+    const f = new File([blob], leaf, {type: blob.type || 'application/octet-stream'});
+    // フォルダの代わりに ZIP の中の道のりを渡す（ジャンル名の手がかりになる）
+    Object.defineProperty(f, 'webkitRelativePath', {value: base + '/' + name});
+    out.push(f);
+  }
+  return out;
+}
+
 async function takeFiles(fileList){
-  const files = [...fileList];
+  let files = [...fileList];
+
+  // ZIP が混じっていたら、先に中身を出しておく
+  const zips = files.filter(f=>/\.zip$/i.test(f.name));
+  if (zips.length){
+    setBatchNote('ZIP を開いています…');
+    const expanded = [];
+    const bad = [];
+    for (const z of zips){
+      try{
+        const inner = await openZip(z);
+        if (inner.length) expanded.push(...inner);
+        else bad.push({name:z.name, why:'中に読めるファイルがありません'});
+      }catch(e){
+        const raw = (e && e.message) || '';
+        const why = /end of central directory|corrupted zip|invalid signature|not a zip/i.test(raw)
+          ? 'ZIP として開けません（壊れているかもしれません）'
+          : /encrypted|password/i.test(raw) ? 'パスワード付きの ZIP は開けません'
+          : (raw || '開けません').slice(0, 40);
+        bad.push({name:z.name, why});
+      }
+    }
+    files = files.filter(f=>!/\.zip$/i.test(f.name)).concat(expanded);
+    if (bad.length){
+      batch = bad.map(b=>({name:b.name, ok:false, why:b.why}));
+      if (!files.length){ setBatchNote(''); drawBatch(); return; }
+    }
+    setBatchNote(expanded.length + ' 件のファイルを取り出しました');
+  }
+
   const out = [];
   if (files.some(f=>/\.(pdf|jpe?g|png|gif|bmp|webp)$/i.test(f.name)))
     setBatchNote('読み取っています…');
@@ -3415,7 +3544,8 @@ async function takeFiles(fileList){
       bpm: p.bpm || 100, nChord:nC,
       nLyric: p.blocks.reduce((a,b)=>a+((b.lyrics||[]).length),0)});
   }
-  batch = out;
+  const failedZips = batch.filter(b=>!b.ok && /\.zip$/i.test(b.name||''));
+  batch = [...failedZips, ...out];
   checkBatchDup();
   drawBatch();
 }
@@ -3448,6 +3578,14 @@ function setDupMode(i, mode){
   drawBatch();
 }
 function setDupName(i, v){ if (batch[i]) batch[i].vname = v; }
+
+// 読み取りの途中経過を出す（PDF や画像は時間がかかるので）
+function setBatchNote(msg){
+  const box = document.getElementById('batchOut');
+  if (!box) return;
+  box.innerHTML = msg
+    ? `<p class="hint" style="margin:16px 0 0">${esc(msg)}</p>` : '';
+}
 
 function drawBatch(){
   const box = document.getElementById('batchOut');
