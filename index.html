@@ -1054,12 +1054,16 @@ function usesFlat(t){ return /^[A-G][b♭]/.test(String(t||'').trim()); }
 //   'sound' … カポを無視した、鳴る音そのもの
 function capoBaseOf(s){ return s.capoBase === 'sound' ? 'sound' : 'play'; }
 
+// いま譜面に書いてあるコードが「何カポ用の押さえ方」なのか。
+// 鳴る音で書いてある譜面は 0カポ用とみなす
+function textCapoOf(s){
+  if (capoBaseOf(s) === 'sound') return 0;
+  return s.textCapo != null ? s.textCapo : (s.capo || 0);
+}
 // 画面に出すコードを何半音ずらすか。
-// 書いてあるのが押さえ方なら、鳴る音で見るときにカポのぶん上げる（逆なら下げる）
+// カポを上げたぶんだけ押さえる形は下がる（鳴る音は変わらない）
 function shiftOf(s){
-  const t = s.transpose || 0, c = s.capo || 0;
-  if (!c || !s.capoView) return t;
-  return t + (capoBaseOf(s) === 'play' ? c : -c);
+  return (s.transpose || 0) + (textCapoOf(s) - (s.capo || 0));
 }
 
 // キー名（Em / B♭ など）を n 半音ずらす。マイナーの m は残す
@@ -1080,15 +1084,12 @@ function keyPrefersFlat(k){
   const t = normTok(String(k||'').trim()).toLowerCase();
   return FLAT_KEYS.some(x=>x.toLowerCase() === t);
 }
-// いま画面に出ているキー。ヘッダーと譜面で同じ答えを使う
-function shownKeyOf(s){
-  const sound = shiftKey(s.key, s.transpose || 0);
-  const play  = shiftKey(sound, -(s.capo || 0));
-  const play1 = capoBaseOf(s) === 'play';
-  const writ  = play1 ? play  : sound;
-  const other = play1 ? sound : play;
-  return (s.capo && s.capoView) ? other : writ;
-}
+// 鳴る音のキー。カポをどう動かしても変わらない
+function soundKeyOf(s){ return shiftKey(s.key, s.transpose || 0); }
+// いま押さえているキー（画面のコードはこの形）
+function playKeyOf(s){ return shiftKey(soundKeyOf(s), -(s.capo || 0)); }
+// ♭／♯ の選び方は、画面に出ているコードのキーに合わせる
+function shownKeyOf(s){ return playKeyOf(s); }
 
 // 押さえやすい形かどうか（弾き語りでよく使う開放弦のコード）
 const EASY_KEYS = ['C','G','D','A','E','Am','Em','Dm'];
@@ -1535,29 +1536,41 @@ function audioDB(){
   }).catch(()=>null);
   return _db;
 }
+// 置き場が無かったり壊れていたりしても、画面が止まらないようにする
+async function audioStore(){
+  const db = await audioDB();
+  if (!db) return null;
+  try{ if (!db.objectStoreNames.contains('audio')) return null; }catch(e){ return null; }
+  return db;
+}
 async function putAudio(id, blob){
-  const db = await audioDB(); if (!db) return false;
-  return new Promise(res=>{
-    const tx = db.transaction('audio','readwrite');
-    tx.objectStore('audio').put(blob, id);
-    tx.oncomplete = ()=>res(true); tx.onerror = ()=>res(false);
-  });
+  const db = await audioStore(); if (!db) return false;
+  try{
+    return await new Promise(res=>{
+      const tx = db.transaction('audio','readwrite');
+      tx.objectStore('audio').put(blob, id);
+      tx.oncomplete = ()=>res(true); tx.onerror = ()=>res(false); tx.onabort = ()=>res(false);
+    });
+  }catch(e){ return false; }
 }
 async function getAudio(id){
-  const db = await audioDB(); if (!db) return null;
-  return new Promise(res=>{
-    const rq = db.transaction('audio').objectStore('audio').get(id);
-    rq.onsuccess = ()=>res(rq.result || null); rq.onerror = ()=>res(null);
-  });
+  const db = await audioStore(); if (!db) return null;
+  try{
+    return await new Promise(res=>{
+      const rq = db.transaction('audio').objectStore('audio').get(id);
+      rq.onsuccess = ()=>res(rq.result || null); rq.onerror = ()=>res(null);
+    });
+  }catch(e){ return null; }
 }
 async function delAudio(id){
-  const db = await audioDB(); if (!db) return;
-  db.transaction('audio','readwrite').objectStore('audio').delete(id);
+  const db = await audioStore(); if (!db) return;
+  try{ db.transaction('audio','readwrite').objectStore('audio').delete(id); }catch(e){}
 }
 // 端末に入っている音源の一覧と、それぞれの大きさ
 async function audioList(){
-  const db = await audioDB(); if (!db) return [];
-  return new Promise(res=>{
+  const db = await audioStore(); if (!db) return [];
+  try{
+  return await new Promise(res=>{
     const out = [];
     const rq = db.transaction('audio').objectStore('audio').openCursor();
     rq.onsuccess = ()=>{
@@ -1568,6 +1581,7 @@ async function audioList(){
     };
     rq.onerror = ()=>res(out);
   });
+  }catch(e){ return []; }
 }
 function mb(n){
   if (!n) return '0 MB';
@@ -2514,11 +2528,9 @@ function render(){
   if (openSong){
     const s = songs.find(x=>x.id===openSong);
     if (!s){ openSong = null; render(); return; }
-    // s.key は「鳴る音」のキー。押さえるキーはそこからカポのぶん下げたもの
-    const soundKey = shiftKey(s.key, s.transpose || 0);
-    const playKey  = shiftKey(soundKey, -(s.capo || 0));
-    const writAs   = capoBaseOf(s);                 // 譜面に書いてあるのはどちらか
-    const shownKey = shownKeyOf(s);
+    // s.key は「鳴る音」のキー。カポを動かしても変わらない
+    const soundKey = soundKeyOf(s);
+    const playKey  = playKeyOf(s);
     // いま何曲目かを出す。1曲だけのときはページめくりを隠す
     const ni = navIds.indexOf(openSong);
     const navPos = (ni >= 0 && navIds.length > 1) ? {i: ni, n: navIds.length} : null;
@@ -2541,30 +2553,26 @@ function render(){
           ${navPos.i < navPos.n - 1 ? '' : 'disabled'}>›</button>` : ''}
       </div>
       <div class="meta">
-        <span class="chipbtn">Key <b>${esc(shownKey||'—')}</b>
+        <span class="chipbtn">Key <b>${esc(soundKey||'—')}</b>
           <button class="stp" onclick="tr(-1)" aria-label="半音下げる">−</button>
           <button class="stp" onclick="tr(1)" aria-label="半音上げる">＋</button></span>
         <span class="chipbtn">Capo <b>${s.capo||0}</b>
           <button class="stp" onclick="capo(-1)" aria-label="カポを下げる">−</button>
           <button class="stp" onclick="capo(1)" aria-label="カポを上げる">＋</button></span>
         <span class="chipbtn">${s.bpm} BPM</span>
-        <button class="ghost" onclick="openCapo()">カポを選ぶ</button>
         <button class="act" id="scrollBtn" onclick="toggleScroll()">${scrolling?'停止':'自動スクロール'}</button>
         ${isViewer ? '' : `<button class="ghost" onclick="choosePlaylist(['${s.id}'])">リストに追加</button>
         <button class="ghost" onclick="editSong('${s.id}')">編集</button>
         <button class="ghost" onclick="exportSong('${s.id}')">書き出し</button>
         <button class="ghost" onclick="shareSong('${s.id}')">共有</button>`}
       </div>
-      ${(s.capo || 0) ? `<div class="caporow">
-        <span class="cl">カポ ${s.capo}</span>
-        <span class="cx${!s.capoView&&writAs==='play'||s.capoView&&writAs==='sound'?' now':''}">押さえ方 <b>${esc(playKey||'—')}</b></span>
+      <div class="caporow">
+        <span class="cl">カポ ${s.capo||0}</span>
+        <span class="cx now">押さえ方 <b>${esc(playKey||'—')}</b></span>
         <span class="ar">→</span>
-        <span class="cx${!s.capoView&&writAs==='sound'||s.capoView&&writAs==='play'?' now':''}">鳴る音 <b>${esc(soundKey||'—')}</b></span>
-        <button class="cvb${s.capoView?' on':''}" onclick="toggleCapoView()">${
-          s.capoView
-            ? (writAs === 'play' ? '鳴る音で表示中' : '押さえ方で表示中')
-            : (writAs === 'play' ? '鳴る音で見る'   : '押さえ方で見る')}</button>
-      </div>` : ''}
+        <span class="cx">鳴る音 <b>${esc(soundKey||'—')}</b></span>
+        <button class="cvb" onclick="openCapo()">カポを選ぶ</button>
+      </div>
       ${vers.length > 1 ? `<div class="vrow">
         <span class="vlab">バージョン</span>
         ${vers.map(v=>`<button class="vb${v.id===s.id?' on':''}"
@@ -2962,17 +2970,6 @@ function render(){
 
 /* ============ 8. 操作 ============ */
 function tr(n){ const s=songs.find(x=>x.id===openSong); s.transpose=(s.transpose||0)+n; persist(); render(); }
-// 「書いてあるまま」と「カポを付けて押さえる形」を切り替える
-function toggleCapoView(){
-  const s = songs.find(x=>x.id===openSong); if (!s) return;
-  s.capoView = !s.capoView;
-  persist(); render();
-  const play = capoBaseOf(s) === 'play';
-  alertShare(!s.capoView ? '書いてあるとおりのコードに戻しました'
-    : play ? 'カポ' + (s.capo||0) + ' で実際に鳴る音で出しています'
-           : 'カポ' + (s.capo||0) + ' を付けたときに押さえる形で出しています');
-}
-
 // カポを選ぶ画面。何カポで何の押さえ方になるかを並べて見せる
 function openCapo(){
   const s = songs.find(x=>x.id===openSong); if (!s) return;
@@ -3000,10 +2997,17 @@ function openCapo(){
 }
 function setCapo(n){
   const s = songs.find(x=>x.id===openSong); if (!s) return;
+  if (s.textCapo == null) s.textCapo = s.capo || 0;
   s.capo = Math.max(0, Math.min(12, n));
   persist(); closePop(); render();
 }
-function capo(n){ const s=songs.find(x=>x.id===openSong); s.capo=Math.max(0,Math.min(12,(s.capo||0)+n)); persist(); render(); }
+function capo(n){
+  const s = songs.find(x=>x.id===openSong); if (!s) return;
+  // 最初に動かすとき、いま書いてある譜面が何カポ用だったかを記録する
+  if (s.textCapo == null) s.textCapo = s.capo || 0;
+  s.capo = Math.max(0, Math.min(12, (s.capo||0)+n));
+  persist(); render();
+}
 function setBpm(v){
   const s=songs.find(x=>x.id===openSong); s.bpm=+v;
   document.getElementById('bpmOut').textContent = v+' BPM';
@@ -3541,6 +3545,24 @@ function tidyPlan(){
       next.key = p.key;
       why.push('キー: ' + (s.key||'—') + ' → ' + p.key + (p.keyGuessed ? '（推測）' : ''));
     }
+
+    // カポ付きなのに、キーの欄に「押さえ方」のキーが入っている曲を直す。
+    // 以前は譜面のコードからキーを決めていたので、カポのぶん低いまま入っている
+    const capoNow = next.capo || s.capo || 0;
+    const keyNow  = next.key  || s.key  || '';
+    if (capoNow > 0 && keyNow){
+      const g = guessKey(parseBody(next.text != null ? next.text : (s.text || '')));
+      if (g){
+        const played = g.root + (g.mode === 'minor' ? 'm' : '');
+        const sameAsPlayed = pc(normTok(keyNow).replace(/m$/,'')) === pc(normTok(played).replace(/m$/,''));
+        const raised = shiftKey(keyNow, capoNow);
+        if (sameAsPlayed && pc(normTok(raised).replace(/m$/,'')) !== pc(normTok(keyNow).replace(/m$/,''))){
+          next.key = raised;
+          why.push('キーの欄が押さえ方のままでした: ' + keyNow + ' → ' + raised +
+                   '（カポ' + capoNow + 'ぶん上げて鳴る音にする）');
+        }
+      }
+    }
     if (why.length) out.push({id:s.id, title:s.title, next, why});
   });
   return out;
@@ -3568,6 +3590,9 @@ function openTidy(){
       <button class="ghost" onclick="closePop()">${plan.length?'やめる':'閉じる'}</button>
     </div>
     <p class="hint">元に戻せません。心配なら先に書き出してください。<br>
+      <b>コードの読み取り（スラッシュ・括弧・桁のずれ）は、ここを押さなくても直っています。</b>
+      譜面の文字そのものは触っていないので、開けばそのまま新しい読み方で出ます。<br>
+      ここで直すのは、曲名・アーティスト・キー・カポ・テンポの<b>欄</b>だけです。<br>
       古い読み取りで行が崩れている曲は、これでは直りません。元のファイルから取り込み直してください。</p>
   </div>`;
   document.getElementById('pop').hidden = false;
@@ -4461,7 +4486,14 @@ async function drawStorage(){
   const box = document.getElementById('storageBox');
   if (!box) return;
   box.innerHTML = '<p class="hint" style="margin:0">調べています…</p>';
-  const [info, list] = await Promise.all([storageInfo(), audioList()]);
+  let info, list;
+  try{
+    [info, list] = await Promise.all([storageInfo(), audioList()]);
+  }catch(e){
+    showBoxError('storageBox', '空き容量を調べられませんでした',
+      (e && (e.name + ': ' + e.message)) || String(e));
+    return;
+  }
   const total = list.reduce((a,x)=>a+x.size, 0);
   const rows = list.map(x=>{
     const song = songs.find(y=>y.id === x.id);
@@ -4485,10 +4517,12 @@ async function drawStorage(){
           ${orphans.length?`<button class="ghost" onclick="dropAudioAll(true)">いらない音源だけ外す（${orphans.length}件）</button>`:''}
           <button class="ghost danger" onclick="dropAudioAll(false)">音源をぜんぶ外す</button></div>`
       : `<p class="hint" style="margin:0">音源は入っていません。</p>`}
-    <div class="secthead" style="margin-top:20px">同期の控え</div>
-    <p class="sub">圏外でも見られるように、同期の内容を端末にも持っています。これを空にしても、
-      クラウド側の譜面は消えません。次にネットにつないだときに取り直します。</p>
-    <div class="btnrow"><button class="ghost" onclick="clearCache()">同期の控えを空にして読み込み直す</button></div>
+    <div class="secthead" style="margin-top:20px">オフライン用の控え</div>
+    <p class="sub">圏外でも譜面を開けるように、クラウドにある内容の<b>コピーをこの端末にも置いて</b>います。
+      これを捨てても、<b>クラウド側の譜面は消えません</b>。次にネットにつないだときに降りてきます。
+      場所が足りないときや、表示がおかしいときに試してください。</p>
+    <div class="btnrow"><button class="ghost" onclick="clearCache()">控えを捨てて読み込み直す</button></div>
+    <div id="cacheMsg"></div>
     <p class="hint" style="margin-top:14px">音源はこの端末にだけ置いてあり、ほかの端末には同期されません。
       外しても譜面は残ります。元の音源ファイルが手元にあれば、曲画面から付け直せます。</p>`;
 }
@@ -4514,15 +4548,73 @@ async function dropAudioAll(orphanOnly){
   drawStorage();
   alertShare(n + '件の音源を外しました');
 }
-// Firestore が端末に持っている控えを捨てる。捨てたあとは読み込み直しが要る
+// 消えない形でエラーを出す。文面はボタンでコピーできる
+function showBoxError(boxId, title, detail, hint){
+  const box = document.getElementById(boxId);
+  if (!box){ alertShare(title); return; }
+  box.innerHTML = `<div class="syncerr" style="margin-top:10px">
+    <b>${esc(title)}</b>
+    ${hint ? `<p style="margin:2px 0 0;font-size:.8rem;line-height:1.6">${hint}</p>` : ''}
+    <code id="${boxId}Code">${esc(detail)}</code>
+    <div class="btnrow" style="margin-top:2px">
+      <button class="mini" onclick="copyText(document.getElementById('${boxId}Code').textContent)">この内容をコピー</button>
+      <button class="mini" onclick="document.getElementById('${boxId}').innerHTML=''">閉じる</button>
+    </div></div>`;
+}
+function copyText(t){
+  navigator.clipboard.writeText(t)
+    .then(()=>alertShare('コピーしました'))
+    .catch(()=>alertShare('コピーできませんでした'));
+}
+
+// 端末に置いてあるオフライン用の控えを捨てる。捨てたあとは読み込み直しが要る
 async function clearCache(){
+  const log = [];
+  const box = document.getElementById('cacheMsg');
+  if (box) box.innerHTML = '<p class="hint" style="margin:8px 0 0">捨てています…</p>';
+  // まずは正規の手順で
   try{
-    if (fb){ await fb.terminate(); await fb.clearPersistence(); }
-    alertShare('空にしました。読み込み直します');
-    setTimeout(()=>location.reload(), 700);
+    if (fb){
+      if (typeof fb.terminate === 'function') await fb.terminate();
+      if (typeof fb.clearPersistence === 'function') await fb.clearPersistence();
+      log.push('正規の手順: 成功');
+    } else log.push('同期は使っていません');
   }catch(e){
-    alertShare('空にできませんでした。ほかのタブでこのページを開いていたら閉じてから、もう一度試してください');
+    log.push('正規の手順: ' + ((e && (e.code || e.name)) || '') + ' ' + ((e && e.message) || String(e)));
   }
+  // だめでも、端末に残っている控えそのものを消しにいく
+  let removed = 0, failed = [];
+  try{
+    let names = [];
+    if (indexedDB.databases){
+      names = (await indexedDB.databases()).map(d=>d && d.name).filter(Boolean);
+    }
+    const targets = names.filter(nm=>/^firestore\b|^firebase-/i.test(nm));
+    for (const nm of targets){
+      const done = await new Promise(res=>{
+        const rq = indexedDB.deleteDatabase(nm);
+        rq.onsuccess = ()=>res(true);
+        rq.onerror   = ()=>res(false);
+        rq.onblocked = ()=>res(false);   // ほかのタブが掴んでいる
+        setTimeout(()=>res(false), 4000);
+      });
+      if (done) removed++; else failed.push(nm);
+    }
+    log.push('控えの数: ' + targets.length + ' / 消せた: ' + removed +
+             (failed.length ? ' / 消せなかった: ' + failed.join(', ') : ''));
+  }catch(e){
+    log.push('直接の削除: ' + ((e && e.message) || String(e)));
+  }
+
+  if (!failed.length){
+    alertShare('控えを捨てました。読み込み直します');
+    setTimeout(()=>location.reload(), 800);
+    return;
+  }
+  showBoxError('cacheMsg', '控えを捨てきれませんでした', log.join('\n'),
+    'このページを<b>ほかのタブやウィンドウでも開いていると</b>、控えを掴んだままになって捨てられません。' +
+    'ほかのタブを全部閉じてから、もう一度押してください。それでも消せないときは、' +
+    'ブラウザを一度終了してから開き直してください。');
 }
 
 /* ---- マイコード ---- */
