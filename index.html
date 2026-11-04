@@ -1807,7 +1807,7 @@ const FB_CONFIG = {
 };
 
 // このファイルの版。差し替えたかどうかの目印になる
-const APP_BUILD = 'V261104-23b';
+const APP_BUILD = 'V261104-23c';
 
 let fb = null, fbUser = null, fbUnsub = null, syncState = 'off', pushTimer = null;
 let syncPaused = false;   // まとめ消しの最中だけ true。消しかけの状態が戻ってくるのを防ぐ
@@ -1883,8 +1883,16 @@ async function diagWrite(){
   // 端末に残っている置き場を全部出す
   try{
     if (indexedDB.databases){
+      // 名前のままだと分かりにくいので、何の置き場かを添える
+      const label = nm =>
+        /^chordnote$/.test(nm)            ? nm + '（音源）' :
+        /^firestore/.test(nm)             ? nm + '（オフライン用の控え）' :
+        /^firebaseLocalStorageDb/.test(nm)? nm + '（ログイン情報）' :
+        /^firebase-heartbeat/.test(nm)    ? nm + '（Firebase の稼働記録・消さなくてよい）' :
+        /^keyval-store$/.test(nm)         ? nm + '（画像読み取りの辞書）' :
+        nm + '（不明）';
       const dbs = (await indexedDB.databases()).map(d=>d && d.name).filter(Boolean);
-      lines.push('端末の置き場: ' + (dbs.join(', ') || 'なし'));
+      lines.push('端末の置き場:' + (dbs.length ? '\n  - ' + dbs.map(label).join('\n  - ') : ' なし'));
     }
   }catch(e){}
 
@@ -1926,7 +1934,8 @@ async function diagWrite(){
   lines.push(bad
     ? '→ 余裕がありません。「溜め込みを捨てる」を押して、それでも直らなければパソコンの空きディスクを増やしてください。'
     : '→ 余裕があります。この状態なら容量のエラーは出ないはずです。');
-  lines.push('※ 上の「使用」の数字は、壊れた控えが残っていると実際と合わないことがあります。');
+  if (bad || ci.bytes > 20*1024*1024)
+    lines.push('※ 上の「使用」の数字は、溜め込みが残っていると実際より大きく出ることがあります。');
   if (box) box.innerHTML = `<div class="syncerr" style="margin-top:10px">
     <b>調べた結果</b><code id="diagCode">${esc(lines.join('\n'))}</code>
     <div class="btnrow" style="margin-top:2px">
