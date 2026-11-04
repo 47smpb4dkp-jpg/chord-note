@@ -1807,7 +1807,7 @@ const FB_CONFIG = {
 };
 
 // このファイルの版。差し替えたかどうかの目印になる
-const APP_BUILD = 'V261104-23c';
+const APP_BUILD = 'V261105-05';
 
 let fb = null, fbUser = null, fbUnsub = null, syncState = 'off', pushTimer = null;
 let syncPaused = false;   // まとめ消しの最中だけ true。消しかけの状態が戻ってくるのを防ぐ
@@ -2440,11 +2440,54 @@ async function driveFindFile(name, parentId){
 }
 
 // 1曲を .md として書き出す
+// 曲とドライブ上のファイルをひも付ける目印。
+// これがあるので、曲名やジャンルを変えても「同じ曲のファイル」だと分かり、
+// 新しく作らずに名前を変えたり移したりできる
+const CN_TAG = 'cnId';
+
+// この曲のファイルをドライブから探す。
+// ① 目印で探す ② 見つからなければ名前で探して目印を付ける（古い版で作った分の引き取り）
+async function driveFindSong(s, parentId){
+  const byTag = await driveFetch('https://www.googleapis.com/drive/v3/files?q=' +
+    encodeURIComponent(`appProperties has { key='${CN_TAG}' and value='${s.id}' } and trashed=false`) +
+    '&fields=files(id,name,parents)&pageSize=1');
+  if (byTag.files && byTag.files.length) return {...byTag.files[0], adopted:false};
+
+  // 目印の無いファイル。まず今あるべき場所、次にどこでも名前で探す
+  const name = exportFileName(s) + '.md';
+  const esc2 = name.replace(/'/g, "\\'");
+  for (const q of [
+        `name='${esc2}' and '${parentId}' in parents and trashed=false`,
+        `name='${esc2}' and trashed=false`]){
+    const r = await driveFetch('https://www.googleapis.com/drive/v3/files?q=' +
+      encodeURIComponent(q) + '&fields=files(id,name,parents)&pageSize=1');
+    if (r.files && r.files.length) return {...r.files[0], adopted:true};
+  }
+  return null;
+}
+
+// 1曲を書き出す。名前やジャンルが変わっていれば、作り直さずに動かす
 async function drivePutSong(s, parentId){
   const name = exportFileName(s) + '.md';
   const body = songToMd(s);
-  const id = await driveFindFile(name, parentId);
-  const meta = id ? {} : {name, parents: [parentId]};
+  const found = await driveFindSong(s, parentId);
+
+  if (found){
+    // 名前が変わっていれば直し、ジャンルが変わっていれば移す
+    const old = (found.parents || [])[0];
+    const moved = old && old !== parentId;
+    if (found.name !== name || moved || found.adopted){
+      let url = 'https://www.googleapis.com/drive/v3/files/' + found.id + '?fields=id';
+      if (moved) url += '&addParents=' + parentId + '&removeParents=' + old;
+      await driveFetch(url, {
+        method: 'PATCH',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name, appProperties: {[CN_TAG]: s.id}})
+      });
+    }
+  }
+
+  const meta = found ? {} : {name, parents: [parentId], appProperties: {[CN_TAG]: s.id}};
   const boundary = '-----cn' + Date.now();
   const payload =
     '--' + boundary + '\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n' +
@@ -2452,15 +2495,83 @@ async function drivePutSong(s, parentId){
     '--' + boundary + '\r\nContent-Type: text/markdown; charset=UTF-8\r\n\r\n' +
     body + '\r\n--' + boundary + '--';
   const url = 'https://www.googleapis.com/upload/drive/v3/files' +
-    (id ? '/' + id + '?uploadType=multipart&fields=id' : '?uploadType=multipart&fields=id');
+    (found ? '/' + found.id : '') + '?uploadType=multipart&fields=id';
   await driveFetch(url, {
-    method: id ? 'PATCH' : 'POST',
+    method: found ? 'PATCH' : 'POST',
     headers: {'Content-Type': 'multipart/related; boundary=' + boundary},
     body: payload
   });
 }
 
-function driveSnap(s){ return songToMd(s).replace(/^updated:.*$/m, ''); }
+const DRIVE_OLD = '_ふるい';
+
+// 後始末。
+//  ・アプリから消した曲のファイル → ゴミ箱へ
+//  ・どの曲にもひも付かない置き去り → 「_ふるい」へ移す（消さずに残す）
+async function driveTidy(){
+  let token = '', moved = 0;
+  const alive = new Set(songs.map(x=>x.id));
+  do {
+    const r = await driveFetch('https://www.googleapis.com/drive/v3/files?q=' +
+      encodeURIComponent(`appProperties has { key='${CN_TAG}' and value!='' } and trashed=false`) +
+      '&fields=nextPageToken,files(id,name,appProperties)&pageSize=200' +
+      (token ? '&pageToken=' + token : ''));
+    for (const f of (r.files || [])){
+      const id = f.appProperties && f.appProperties[CN_TAG];
+      if (!id || alive.has(id)) continue;
+      await driveFetch('https://www.googleapis.com/drive/v3/files/' + f.id + '?fields=id', {
+        method: 'PATCH',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({trashed: true})
+      });
+      moved++;
+    }
+    token = r.nextPageToken || '';
+  } while (token);
+
+  // 目印の無い置き去り（前の版が作った重複など）を集める
+  const root = await driveFindRoot();
+  const dirs = await driveFetch('https://www.googleapis.com/drive/v3/files?q=' +
+    encodeURIComponent(`'${root}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`) +
+    '&fields=files(id,name)&pageSize=200');
+  const places = [{id: root, name: ''}]
+    .concat((dirs.files || []).filter(d=>d.name !== DRIVE_OLD));
+  const stray = [];
+  for (const d of places){
+    let t = '';
+    do {
+      const r = await driveFetch('https://www.googleapis.com/drive/v3/files?q=' +
+        encodeURIComponent(`'${d.id}' in parents and trashed=false and mimeType!='application/vnd.google-apps.folder'`) +
+        '&fields=nextPageToken,files(id,name,appProperties,parents)&pageSize=200' + (t ? '&pageToken=' + t : ''));
+      (r.files || []).forEach(f=>{
+        if (!/\.md$/i.test(f.name)) return;
+        if (f.appProperties && f.appProperties[CN_TAG]) return;
+        stray.push({...f, from: d.id});
+      });
+      t = r.nextPageToken || '';
+    } while (t);
+  }
+  let parked = 0;
+  if (stray.length){
+    const bin = await driveFolder(DRIVE_OLD, root);
+    for (const f of stray){
+      try{
+        await driveFetch('https://www.googleapis.com/drive/v3/files/' + f.id +
+          '?fields=id&addParents=' + bin + '&removeParents=' + f.from,
+          {method:'PATCH', headers:{'Content-Type':'application/json'}, body:'{}'});
+        parked++;
+      }catch(e){}
+    }
+  }
+  return {trashed: moved, parked};
+}
+
+// 本文だけでなく、置き場所が変わったときも書き直すように、
+// 曲名・バージョン名・ジャンルも見比べる対象に入れる
+function driveSnap(s){
+  return (s.folder || '未分類') + '\u0000' + exportFileName(s) + '\u0000' +
+         songToMd(s).replace(/^updated:.*$/m, '');
+}
 
 // 変わった曲だけドライブへ送る
 async function runDriveBackup(all){
@@ -2485,8 +2596,15 @@ async function runDriveBackup(all){
         failed++;
       }
     }
+    let tidy = {trashed:0, parked:0};
+    if (all){ try{ tidy = await driveTidy(); }catch(e){} }
     driveError = failed ? failed + ' 曲を書き出せませんでした（' + lastDriveErr + '）' : '';
-    if (done) driveLastAt = Date.now();
+    if (done || tidy.trashed || tidy.parked) driveLastAt = Date.now();
+    const notes = [
+      tidy.trashed ? '消した曲 ' + tidy.trashed + ' 件をゴミ箱へ' : '',
+      tidy.parked  ? '置き去り ' + tidy.parked  + ' 件を「' + DRIVE_OLD + '」へ' : ''
+    ].filter(Boolean);
+    if (notes.length) alertShare('ドライブを整理しました（' + notes.join(' / ') + '）');
   }catch(e){
     if ((e && e.message) !== 'EXPIRED'){
       driveState = 'error';
@@ -2526,7 +2644,10 @@ async function driveRestore(){
       } while (token);
     };
     await scan(root, '');
-    for (const d of (dirs.files || [])) await scan(d.id, d.name);
+    for (const d of (dirs.files || [])){
+      if (d.name === DRIVE_OLD) continue;   // 置き去り置き場は読まない
+      await scan(d.id, d.name);
+    }
     if (!found.length){
       showBoxError('driveMsg', 'ドライブに譜面が見つかりませんでした',
         'フォルダ「' + DRIVE_ROOT + '」の中に .md がありません。');
@@ -2583,7 +2704,10 @@ function drawDrive(){
     </div>
     <p class="sub">マイドライブの中に「<b>${DRIVE_ROOT}</b>」というフォルダを作って、
       ジャンルごとに曲を <b>.md</b> で置いていきます。ドライブのほかの中身は見ません。
-      普段の同期は今までどおり Firebase が担当し、ドライブは<b>自分で見られる控え</b>です。</p>
+      普段の同期は今までどおり Firebase が担当し、ドライブは<b>自分で見られる控え</b>です。<br>
+      曲名やジャンルを変えると、<b>ドライブ側も名前を変えて移します</b>（作り直しません）。
+      「いますぐ全部書き出す」を押すと、消した曲のファイルをゴミ箱へ、
+      どの曲にもひも付かないファイルを「${DRIVE_OLD}」フォルダへまとめます。</p>
     <div class="btnrow">
       ${on
         ? `<button class="ghost" onclick="runDriveBackup(true)" ${driveBusy?'disabled':''}>いますぐ全部書き出す</button>
