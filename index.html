@@ -1757,6 +1757,40 @@ async function storageInfo(){
     return {usage: e.usage || 0, quota: e.quota || 0};
   }catch(e){ return null; }
 }
+// オフライン用に溜めてあるファイルの数と大きさを調べる
+async function cacheInfo(){
+  const out = {names:[], files:0, bytes:0, outside:0};
+  try{
+    if (!self.caches) return out;
+    const keys = await caches.keys();
+    out.names = keys.slice();
+    for (const k of keys){
+      const c = await caches.open(k);
+      const reqs = await c.keys();
+      out.files += reqs.length;
+      for (const r of reqs){
+        if (!r.url.startsWith(location.origin)) out.outside++;
+        try{
+          const res = await c.match(r);
+          if (!res) continue;
+          const len = res.headers.get('content-length');
+          if (len) out.bytes += (+len || 0);
+          else { const bl = await res.clone().blob(); out.bytes += bl.size; }
+        }catch(e){}
+      }
+    }
+  }catch(e){}
+  return out;
+}
+// 溜め込みを全部捨てる
+async function wipeCaches(){
+  try{
+    const keys = await caches.keys();
+    for (const k of keys) await caches.delete(k);
+    return keys.length;
+  }catch(e){ return 0; }
+}
+
 function isQuotaError(e){
   const t = ((e && e.code) || '') + ' ' + ((e && e.message) || String(e));
   return /QuotaExceeded|quota|storage is full|exceeded the quota/i.test(t);
@@ -1773,7 +1807,7 @@ const FB_CONFIG = {
 };
 
 // このファイルの版。差し替えたかどうかの目印になる
-const APP_BUILD = 'V261104-23';
+const APP_BUILD = 'V261104-23b';
 
 let fb = null, fbUser = null, fbUnsub = null, syncState = 'off', pushTimer = null;
 let syncPaused = false;   // まとめ消しの最中だけ true。消しかけの状態が戻ってくるのを防ぐ
@@ -1842,10 +1876,21 @@ async function diagWrite(){
   const list = await audioList();
   lines.push('音源: ' + list.length + ' 件 / ' + mb(list.reduce((a,x)=>a+x.size,0)));
   lines.push('オフライン用の控え: ' + (offlineState || '不明'));
+  const ci = await cacheInfo();
+  lines.push('溜め込んだファイル: ' + ci.files + ' 件 / ' + mb(ci.bytes) +
+             (ci.outside ? '（うち外のサイトのもの ' + ci.outside + ' 件）' : '') +
+             (ci.names.length ? ' [' + ci.names.join(', ') + ']' : ''));
+  // 端末に残っている置き場を全部出す
+  try{
+    if (indexedDB.databases){
+      const dbs = (await indexedDB.databases()).map(d=>d && d.name).filter(Boolean);
+      lines.push('端末の置き場: ' + (dbs.join(', ') || 'なし'));
+    }
+  }catch(e){}
 
-  // 1MB 書いてみる
+  // どこまで書けるか、小さい方から試す
   const probe = 'cn_probe_' + Date.now();
-  let verdict = '';
+  let okUpto = 0, verdict = '';
   try{
     const db = await new Promise((res,rej)=>{
       const rq = indexedDB.open(probe, 1);
@@ -1853,30 +1898,34 @@ async function diagWrite(){
       rq.onsuccess = ()=>res(rq.result);
       rq.onerror = ()=>rej(rq.error);
     });
-    const blob = new Blob([new Uint8Array(1024*1024)]);
-    const okWrite = await new Promise(res=>{
-      const tx = db.transaction('t','readwrite');
-      tx.objectStore('t').put(blob, 'x');
-      tx.oncomplete = ()=>res(true);
-      tx.onerror = ()=>res(false);
-      tx.onabort = ()=>res(false);
-    });
+    for (const kb of [16, 256, 1024, 4096]){
+      const blob = new Blob([new Uint8Array(kb * 1024)]);
+      const good = await new Promise(res=>{
+        const tx = db.transaction('t','readwrite');
+        tx.objectStore('t').put(blob, 'p' + kb);
+        tx.oncomplete = ()=>res(true);
+        tx.onerror = ()=>res(false);
+        tx.onabort = ()=>res(false);
+      });
+      if (!good) break;
+      okUpto = kb;
+    }
     db.close();
     indexedDB.deleteDatabase(probe);
-    verdict = okWrite ? '1MB の書き込み: できた' : '1MB の書き込み: できなかった';
+    verdict = okUpto >= 4096 ? '書き込みの余裕: 4MB まで入った（十分）'
+            : okUpto ? '書き込みの余裕: ' + (okUpto >= 1024 ? (okUpto/1024)+'MB' : okUpto+'KB') + ' までしか入らない'
+            : '書き込み: まったくできない';
   }catch(e){
-    verdict = '1MB の書き込み: できなかった（' + ((e && (e.name||e.message)) || '') + '）';
+    verdict = '書き込み: 試せなかった（' + ((e && (e.name||e.message)) || '') + '）';
   }
   lines.push(verdict);
-  const bad = /できなかった/.test(verdict);
+  const bad = okUpto < 1024;
   const off = !offlineWanted();
+  if (ci.bytes > 20*1024*1024 || ci.outside > 20)
+    lines.push('→ オフライン用に溜め込んだものが大きすぎます。下の「溜め込みを捨てる」で空けてください。');
   lines.push(bad
-    ? (off
-? '→ 控えを使わない設定なのに書き込めません。パソコンの空きディスクを増やしてください。'
-: '→ 書き込めません。「控えを使わない設定にする」を試してください。それで書けるなら原因は控えです。')
-    : (off
-? '→ 書き込めています。控えを使わない設定なので、容量のエラーはもう出ないはずです。このまま使えます。'
-: '→ 端末は書き込めます。控えが壊れているか大きすぎる可能性があるので、控えを捨てるか、使わない設定にしてください。'));
+    ? '→ 余裕がありません。「溜め込みを捨てる」を押して、それでも直らなければパソコンの空きディスクを増やしてください。'
+    : '→ 余裕があります。この状態なら容量のエラーは出ないはずです。');
   lines.push('※ 上の「使用」の数字は、壊れた控えが残っていると実際と合わないことがあります。');
   if (box) box.innerHTML = `<div class="syncerr" style="margin-top:10px">
     <b>調べた結果</b><code id="diagCode">${esc(lines.join('\n'))}</code>
@@ -5308,7 +5357,12 @@ async function drawStorage(){
     <div id="driveBox"></div>
     <div class="secthead" style="margin-top:22px">うまくいかないとき</div>
     <p class="sub">容量のエラーが続くときは、何が原因か調べられます。</p>
-    <div class="btnrow"><button class="ghost" onclick="diagWrite()">書き込めるか調べる</button></div>
+    <div class="btnrow">
+      <button class="ghost" onclick="diagWrite()">書き込めるか調べる</button>
+      <button class="ghost danger" onclick="dropCaches()">溜め込みを捨てる</button>
+    </div>
+    <p class="hint">「溜め込み」は、オフラインでも開けるように取ってあるファイルです。
+      捨てても譜面は消えません。次にネットにつないだときに要るぶんだけ取り直します。</p>
     <div id="diagOut"></div>
     <p class="hint" style="margin-top:14px">音源はこの端末にだけ置いてあり、ほかの端末には同期されません。
       外しても譜面は残ります。元の音源ファイルが手元にあれば、曲画面から付け直せます。</p>`;
@@ -5358,6 +5412,21 @@ function copyText(t){
     .catch(()=>alertShare('コピーできませんでした'));
 }
 
+// 溜め込みを捨てる
+async function dropCaches(){
+  const before = await cacheInfo();
+  // 先に仕組みを止める。止めずに捨てると、捨てた端から作り直される
+  try{
+    if (navigator.serviceWorker){
+      const rs = await navigator.serviceWorker.getRegistrations();
+      for (const r of rs) await r.unregister();
+    }
+  }catch(e){}
+  const n = await wipeCaches();
+  alertShare(before.files + '件・' + mb(before.bytes) + ' を捨てました。読み込み直します');
+  setTimeout(()=>location.reload(), 1200);
+}
+
 // 端末に置いてあるオフライン用の控えを捨てる。捨てたあとは読み込み直しが要る
 async function clearCache(){
   const log = [];
@@ -5405,6 +5474,8 @@ async function clearCache(){
     log.push('直接の削除: ' + ((e && e.message) || String(e)));
   }
 
+  const nc = await wipeCaches();
+  if (nc) log.push('溜め込み: ' + nc + ' 件を捨てた');
   if (!failed.length){
     alertShare('控えを捨てました。読み込み直します');
     setTimeout(()=>location.reload(), 800);
