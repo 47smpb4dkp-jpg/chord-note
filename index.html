@@ -260,8 +260,21 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
 
 /* 曲画面ヘッダ */
 .hdr-row1{display:flex;align-items:center;gap:8px;flex:1 1 100%;min-width:0}
+.hdr-genre{display:inline-block;border:1px solid var(--line);border-radius:4px;
+  padding:0 5px;color:var(--fg);background:var(--surface-2);font-size:.95em}
 .hdr-sub2{font-size:.72rem;color:var(--fg-dim);font-weight:400;margin-top:1px;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 曲名のうしろに細字でぶら下げる。せまい画面では下の行に落として読めるようにする */
+.hdr-title .tt{min-width:0}
+.hdr-title .tt>.ttn{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hdr-title .tt .hdr-sub2{display:block;margin:1px 0 0;font-size:.7rem;font-weight:400;
+  color:var(--fg-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+@media (min-width:640px){
+  /* 行数を減らすため、曲名と同じ行に並べる */
+  .hdr-title .tt{display:flex;align-items:baseline;gap:9px}
+  .hdr-title .tt>.ttn{flex:0 1 auto;min-width:3em}
+  .hdr-title .tt .hdr-sub2{flex:0 1 auto;min-width:0;margin:0}
+}
 /* 曲名のところを左右にスワイプしてページをめくる */
 .songnav{touch-action:pan-y;-webkit-user-select:none;user-select:none;cursor:grab}
 .songnav .tt{min-width:0}
@@ -1297,8 +1310,7 @@ function memoBarHtml(){
 function popPick(name, desc, html){
   document.getElementById('popName').textContent = name;
   document.getElementById('popDesc').textContent = desc || '';
-  document.getElementById('popGrid').innerHTML = `<div style="flex:1 1 100%">${html}
-    <div class="btnrow" style="margin-top:14px"><button class="ghost" onclick="closePop()">閉じる</button></div></div>`;
+  document.getElementById('popGrid').innerHTML = `<div style="flex:1 1 100%">${html}</div>`;
   document.getElementById('pop').hidden = false;
 }
 function openGenrePick(){
@@ -1977,7 +1989,7 @@ const FB_CONFIG = {
 };
 
 // このファイルの版。差し替えたかどうかの目印になる
-const APP_BUILD = 'V261109-09';
+const APP_BUILD = 'V261109-15';
 
 let fb = null, fbUser = null, fbUnsub = null, syncState = 'off', pushTimer = null;
 let syncPaused = false;   // まとめ消しの最中だけ true。消しかけの状態が戻ってくるのを防ぐ
@@ -3080,15 +3092,22 @@ function stopSongRec(){
   if (songRec && songRec.state === 'recording'){ try{ songRec.stop(); }catch(e){} }
 }
 function go(t){ stopScroll(); stopSongRec(); tab=t; openSong=null; editing=null; batchEdit=null; render(); }
+// いまページめくりが及ぶ範囲の名前。絞り込んでいればその名前を出す
+function navScopeName(){
+  if (folderFilter === 'fav')   return '★ お気に入り';
+  if (folderFilter === 'often') return 'よく使う';
+  if (folderFilter) return (groupMode === 'artist' ? folderFilter : 'ジャンル：' + folderFilter);
+  return groupMode === 'artist' ? '楽曲リスト（作曲者・バンド順）' : '楽曲リスト（すべて）';
+}
 function openSongView(id, from){
   stopScroll(); stopSongRec();
   if (from === 'pl'){
     const pl = playlists.find(x=>x.id===openList);
     navIds = plOrder.slice();
-    navName = pl ? pl.name : 'セットリスト';
+    navName = 'セットリスト：' + (pl ? pl.name : '');
   } else {
     navIds = listOrder.slice();
-    navName = '楽曲リスト';
+    navName = navScopeName();
   }
   alignNav(id);
   openSong=id; editing=null;
@@ -3107,7 +3126,7 @@ function alignNav(id){
   let at = navIds.findIndex(sameGroup);
   if (at < 0){
     navIds = groupReps().map(x=>x.id);
-    navName = '楽曲リスト';
+    navName = '楽曲リスト（すべて）';
     at = navIds.findIndex(sameGroup);
   }
   if (at >= 0) navIds[at] = id; else navIds = [id];
@@ -3439,9 +3458,11 @@ function renderInner(){
     // いま何曲目かを出す。1曲だけのときはページめくりを隠す
     const ni = navIds.indexOf(openSong);
     const navPos = (ni >= 0 && navIds.length > 1) ? {i: ni, n: navIds.length} : null;
+    // 曲名と同じ行に、細字で「アーティスト・ジャンル・いま何曲目か・範囲」を並べる
     const navSub = [
-      s.artist ? esc(s.artist) : '',
-      navPos ? `${navPos.i + 1} / ${navPos.n} · ${esc(navName)}` : ''
+      (s.artist && s.artist !== navName) ? esc(s.artist) : '',
+      `<span class="hdr-genre">${esc(s.folder || '未分類')}</span>`,
+      navPos ? `${navPos.i + 1} / ${navPos.n} ${esc(navName)}` : esc(navName)
     ].filter(Boolean).join(' · ');
     const vers = versionsOf(s);
     hdr.innerHTML = `
@@ -3449,8 +3470,8 @@ function renderInner(){
         <button class="ghost" onclick="go(tab)" aria-label="戻る">←</button>
         <button class="star${s.fav?' on':''}" onclick="toggleFav('${s.id}')" aria-label="お気に入り">${s.fav?'★':'☆'}</button>
         <div class="hdr-title${navPos?' songnav':''}" id="songNav">
-          <div class="tt">${esc(s.title || '(曲名なし)')}</div>
-          ${navSub ? `<div class="hdr-sub2">${navSub}</div>` : ''}
+          <div class="tt"><span class="ttn">${esc(s.title || '(曲名なし)')}</span>${
+            navSub ? `<span class="hdr-sub2">${navSub}</span>` : ''}</div>
         </div>
         ${navPos ? `<button class="pg" onclick="songStep(-1)" aria-label="前の曲"
           ${navPos.i > 0 ? '' : 'disabled'}>‹</button>
