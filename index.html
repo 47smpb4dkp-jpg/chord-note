@@ -97,6 +97,19 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
 
 /* 曲リスト */
 .songlist{display:flex;flex-direction:column;gap:8px}
+/* 行を左右になぞると、下からボタンが出てくる */
+.swipe{position:relative;overflow:hidden;border-radius:10px}
+.swipe>.swbody{position:relative;z-index:1;will-change:transform}
+.swipe>.swact{position:absolute;top:0;bottom:0;display:flex;z-index:0}
+.swipe>.swact.left{left:0}
+.swipe>.swact.right{right:0}
+.swipe>.swact button{border:0;padding:0 15px;font:inherit;font-family:var(--font-ja);
+  font-size:.78rem;font-weight:700;color:#fff;background:var(--accent);cursor:pointer;white-space:nowrap}
+.swipe>.swact button.sw-del{background:#b4443a}
+.swipe>.swact button.sw-alt{background:#52646f}
+.swmore{border:0;background:none;color:var(--fg-dim);font-size:1.1rem;line-height:1;
+  padding:3px 6px;cursor:pointer;flex:0 0 auto}
+.swmore:hover{color:var(--accent)}
 .songrow{display:flex;align-items:center;gap:10px;background:var(--surface);border:1px solid var(--line);
   border-radius:10px;padding:10px 14px;text-align:left;width:100%}
 .songrow:hover{border-color:var(--accent)}
@@ -199,6 +212,13 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
 .picker.cp .pk{min-width:0;padding:6px 11px;font-size:.82rem}
 .picker.cp .pk.sub{opacity:.78;font-size:.76rem;padding:5px 9px}
 .mypk{display:inline-flex;align-items:center;gap:5px}
+.picker.cp .mypk input{width:92px}
+/* 押すとタブが開くボタン（ジャンル・キー・カポ） */
+.pkbig{display:block;width:100%;text-align:left;background:var(--surface);border:1px solid var(--line);
+  border-radius:9px;padding:9px 11px;font:inherit;font-size:.92rem;color:var(--fg);cursor:pointer;
+  font-family:var(--font-ja);line-height:1.25}
+.pkbig:hover{border-color:var(--accent)}
+.pkbig i{font-style:normal;display:block;font-size:.66rem;color:var(--fg-dim);margin-top:2px}
 .mypk input{width:118px;padding:5px 9px;font-size:.8rem;border-radius:7px;
   font-family:var(--font-mono);background:var(--surface);color:var(--fg);border:1px solid var(--line)}
 
@@ -208,14 +228,14 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
 .split .card{margin-bottom:0;display:flex;flex-direction:column;min-width:0}
 /* 左右の窓はまったく同じ寸法。見出しも1行に揃えて、行の位置がずれないようにする */
 .split .card h2{margin:0 0 10px;height:1.3em;line-height:1.3}
-.split textarea,.split #editPrev,.split #bPrev{
+.split textarea,.split #editPrev,.split #bPrev,.split #draftPrev{
   height:58vh;min-height:58vh;max-height:58vh;margin:0;box-sizing:border-box;
   padding:12px;border:1px solid var(--line);border-radius:9px;
   font-family:var(--font-grid);font-size:var(--edit-size);line-height:var(--edit-lh);
   tab-size:2;white-space:pre;overflow:auto;overflow-wrap:normal}
 .split textarea{background:var(--surface);resize:none;padding-left:44px}
-.split #editPrev,.split #bPrev{background:var(--surface-2)}
-.split #editPrev .lrow,.split #bPrev .lrow{overflow:visible}
+.split #editPrev,.split #bPrev,.split #draftPrev{background:var(--surface-2)}
+.split #editPrev .lrow,.split #bPrev .lrow,.split #draftPrev .lrow{overflow:visible}
 
 /* 行ごとの切り替えボタン */
 .lntg{position:absolute;left:-30px;top:0;width:24px;height:1.5em;border-radius:6px;
@@ -226,8 +246,8 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
 .lntg.hint{color:var(--accent);background:var(--accent-soft);border-color:var(--accent)}
 .blk.withtg{position:relative}
 .blk.withtg .lntg{position:absolute;left:-30px;top:0}
-#editPrev #sheet,#bPrev #sheet{padding-left:32px}
-#editPrev .aligned,#bPrev .aligned{padding-left:32px}
+#editPrev #sheet,#bPrev #sheet,#draftPrev #sheet{padding-left:32px}
+#editPrev .aligned,#bPrev .aligned,#draftPrev .aligned{padding-left:32px}
 
 /* 読み取り結果の見出し */
 .prevhead{display:flex;flex-wrap:wrap;gap:9px 20px;padding:11px 13px;margin-bottom:14px;
@@ -1090,11 +1110,49 @@ function shiftKey(k, n){
   const r = shiftRoot(m[1], n, flat);
   return (wide ? r.replace(/b/g,'♭') : r) + m[2];
 }
+// コード名の ♯／♭ の書き方だけを入れ替える。文字数は変わらないので桁は崩れない
+function respellChord(t, flat){
+  const m = /^([A-G][#b♭♯]?)(.*)$/.exec(normTok(t));
+  if (!m || !/[#b♭♯]/.test(m[1])) return t;
+  const wide = /^[A-G][♭♯]/.test(t.trim());
+  const r = shiftRoot(m[1], 0, flat);
+  return (wide ? r.replace(/b/g,'♭').replace(/#/g,'♯') : r) + m[2];
+}
+// 譜面ぜんたいの ♯／♭ を書き換える。歌詞の行は触らない
+function respellText(text, flat){
+  return String(text == null ? '' : text).replace(/\r\n/g,'\n').split('\n').map(L=>{
+    if (!L.trim()) return L;
+    const k = lineKind(L);
+    if (k !== 'chord' && k !== 'section') return L;
+    const sm = stripMark(L);
+    const body = sm.body;
+    const toks = tokenize(body).filter(t=>t.ci != null);
+    let out = body;
+    // うしろから直していくと、前の桁がずれない
+    for (let i = toks.length - 1; i >= 0; i--){
+      const t = toks[i];
+      if (body.substr(t.ci, t.raw.length) !== t.raw) continue;
+      const c = t.joined ? {kind:'c'} : classify(t.raw);
+      if (!c || c.kind !== 'c') continue;
+      const nw = respellChord(t.raw, flat);
+      if (nw !== t.raw && dispWidth(nw) === dispWidth(t.raw))
+        out = out.slice(0, t.ci) + nw + out.slice(t.ci + t.raw.length);
+    }
+    return sm.mark + out;
+  }).join('\n');
+}
 // ♭ で書くのがふつうのキー（F なら 4番目は A# ではなく B♭）
 const FLAT_KEYS = ['F','Bb','Eb','Ab','Db','Gb','Dm','Gm','Cm','Fm','Bbm','Ebm'];
 function keyPrefersFlat(k){
   const t = normTok(String(k||'').trim()).toLowerCase();
   return FLAT_KEYS.some(x=>x.toLowerCase() === t);
+}
+// 画面に出すときの ♯／♭ の選び方。曲ごとに指定があればそれに従う
+function accPref(s, n){
+  const a = s && s.acc;
+  if (a === 'flat')  return true;
+  if (a === 'sharp') return false;
+  return n ? keyPrefersFlat(shownKeyOf(s)) : false;
 }
 // 鳴る音のキー。カポをどう動かしても変わらない
 function soundKeyOf(s){ return shiftKey(s.key, s.transpose || 0); }
@@ -1150,43 +1208,152 @@ function curEdit(){
 function curEditText(){
   return document.getElementById('eText') || document.getElementById('draftText');
 }
-function redrawKeyCard(){
-  const t = curEdit(); if (!t) return;
-  const el = document.getElementById('keyCard');
-  if (el) el.innerHTML = editKeyCard(t);
+function redrawKeyCard(){ refreshKeyRow(); }
+
+// 編集画面のキー・カポの欄。押すと選べるボタン式
+// ---- ジャンル・キー・カポ・♯♭ を1行にまとめて出す ----
+function genreLabel(s){ return (String(s.folder||'').trim() || '未分類'); }
+function capoBtnLabel(s){
+  const n = parseInt(s.capo,10) || 0;
+  const play = shiftKey(shiftKey(s.key, s.transpose||0), -n);
+  return (n===0 ? 'カポなし' : 'カポ ' + n) + `<i>${esc(play||'—')} で押さえる</i>`;
+}
+function accLabel(s){
+  return s.acc === 'flat' ? '♭ で書く' : s.acc === 'sharp' ? '♯ で書く' : 'キーに合わせる';
+}
+function keyBtnLabel(s){
+  const k = String(s.key||'').trim();
+  return (k || '指定なし') + '<i>鳴る音のキー</i>';
+}
+function keyNoteHtml(s){
+  const sound = shiftKey(s.key, s.transpose || 0);
+  const play  = shiftKey(sound, -(s.capo || 0));
+  const playMode = capoBaseOf(s) === 'play';
+  return `<div class="picker" style="gap:6px">
+      <button class="pk sub${playMode?' on':''}" onclick="setCapoBase('play')">譜面はカポを付けて押さえる形</button>
+      <button class="pk sub${!playMode?' on':''}" onclick="setCapoBase('sound')">譜面はカポなしの鳴る音</button>
+    </div>
+    <p class="sub" style="margin:7px 0 0"><b>${esc(sound||'—')}</b> で鳴る曲。カポ ${s.capo||0} なら押さえるのは
+      <b>${esc(play||'—')}</b>。${playMode
+        ? 'カポを選び直すと<b>コード譜の文字も書き換わります</b>。'
+        : 'コード譜は鳴る音のまま置いておきます。'}</p>`;
+}
+// 情報欄（ジャンル／BPM／キー／カポ／♯♭）。曲の編集と新規登録で共通
+function editInfoRow(s){
+  return `<div class="erow">
+      <div class="field"><label>ジャンル</label>
+        <button class="pkbig" id="genreBtn" onclick="openGenrePick()">${esc(genreLabel(s))}</button></div>
+      <div class="field"><label for="eBpm">BPM</label>
+        <input type="text" id="eBpm" value="${s.bpm||100}"
+          oninput="if(!editing){const v=parseInt(this.value,10); draft.bpm=isNaN(v)?undefined:Math.max(30,Math.min(260,v));}"></div>
+      <div class="field"><label>原曲キー</label>
+        <button class="pkbig" id="keyBtn" onclick="openEditKeyPick()">${keyBtnLabel(s)}</button></div>
+      <div class="field"><label>カポ</label>
+        <button class="pkbig" id="capoBtn" onclick="openEditCapoPick()">${capoBtnLabel(s)}</button></div>
+      <div class="field"><label>♯ / ♭</label>
+        <button class="pkbig" id="accBtn" onclick="cycleAcc()">${esc(accLabel(s))}</button></div>
+    </div>
+    <div id="keyNote">${keyNoteHtml(s)}</div>`;
+}
+// 押したボタンの文字だけ書き換える（入力中の文字を消さないため）
+function refreshKeyRow(){
+  const s = curEdit(); if (!s) return;
+  const set = (id, html)=>{ const el = document.getElementById(id); if (el) el.innerHTML = html; };
+  set('genreBtn', esc(genreLabel(s)));
+  set('keyBtn',   keyBtnLabel(s));
+  set('capoBtn',  capoBtnLabel(s));
+  set('accBtn',   esc(accLabel(s)));
+  set('keyNote',  keyNoteHtml(s));
   drawPalette();
   if (editing) livePreview(); else previewDraft();
 }
 
-// 編集画面のキー・カポの欄。押すと選べるボタン式
-function editKeyCard(s){
+// コードを入れる欄（コード譜のすぐ上に出す）
+function chordBarHtml(){
+  return `<div class="card" style="margin-bottom:10px;padding:11px 14px">
+    <label style="display:block;font-size:.74rem;font-weight:700;letter-spacing:.05em;color:var(--fg-dim);margin-bottom:6px">コードを入れる<span style="font-weight:400;letter-spacing:0">　— コード譜のカーソルのところに入ります</span></label>
+    <div class="picker cp" id="palette"></div>
+  </div>`;
+}
+// メモを入れる欄（表示の確認の下に出す）
+const MEMO_TABS = ['2回し','くりかえし','ここから','ここまで','イントロ','間奏','アウトロ',
+                   'フェードアウト','1番だけ','2番だけ','女性キー','半音下げ'];
+function memoBarHtml(){
+  return `<div class="card" style="padding:11px 14px">
+    <label for="memoBox" style="display:block;font-size:.74rem;font-weight:700;letter-spacing:.05em;color:var(--fg-dim);margin-bottom:6px">メモを入れる<span style="font-weight:400;letter-spacing:0">　— 括弧で囲んで差し込むので、コードとして読まれません</span></label>
+    <div class="picker cp">
+      ${MEMO_TABS.map(m=>`<button class="pk sub" onclick="insertMemo('${m}')">${m}</button>`).join('')}
+      <span class="tabdiv"></span>
+      <span class="mypk">
+        <input type="text" id="memoBox" placeholder="自分で書く"
+          onkeydown="if(event.key==='Enter'){event.preventDefault();insertMemo()}">
+        <button class="pk" onclick="insertMemo()">入れる</button>
+      </span>
+    </div>
+  </div>`;
+}
+
+/* ---- 押すと開くタブ（ジャンル・キー・カポ） ---- */
+function popPick(name, desc, html){
+  document.getElementById('popName').textContent = name;
+  document.getElementById('popDesc').textContent = desc || '';
+  document.getElementById('popGrid').innerHTML = `<div style="flex:1 1 100%">${html}
+    <div class="btnrow" style="margin-top:14px"><button class="ghost" onclick="closePop()">閉じる</button></div></div>`;
+  document.getElementById('pop').hidden = false;
+}
+function openGenrePick(){
+  const s = curEdit(); if (!s) return;
+  const cur = String(s.folder||'').trim();
+  const opts = genreOptions().filter(f=>f && f !== '未分類');
+  popPick('ジャンルを選ぶ', '', `<div class="picker cp">
+      <button class="pk${cur?'':' on'}" onclick="setEditGenre('')">未分類</button>
+      ${opts.map(f=>`<button class="pk${f===cur?' on':''}" onclick="setEditGenre('${esc(f).replace(/'/g,"&#39;")}')">${esc(f)}</button>`).join('')}
+    </div>
+    <div class="mypk" style="width:100%;margin-top:12px">
+      <input type="text" id="newGenre" placeholder="新しいジャンル名" style="flex:1 1 auto;width:auto;min-width:0"
+        onkeydown="if(event.key==='Enter'){event.preventDefault();setEditGenre(this.value)}">
+      <button class="act" onclick="setEditGenre(document.getElementById('newGenre').value)">決める</button></div>`);
+}
+function setEditGenre(v){
+  const s = curEdit(); if (!s) return;
+  s.folder = String(v||'').trim();
+  closePop();
+  refreshKeyRow();
+}
+function openEditKeyPick(){
+  const s = curEdit(); if (!s) return;
+  const same = (a,b) => normTok(String(a||'')).toLowerCase() === normTok(String(b||'')).toLowerCase();
+  const chip = k => `<button class="pk${same(k, s.key)?' on':''}" onclick="setEditKey('${k}')">${k}</button>`;
+  popPick('原曲キーを選ぶ', 'カポを付けずに鳴っている音のキーです。', `<div class="picker kp">
+      <span class="kprow"><i>メジャー</i>${KEY_MAJOR.map(chip).join('')}</span>
+      <span class="kprow"><i>マイナー</i>${KEY_MINOR.map(chip).join('')}</span>
+      <span class="kprow"><button class="pk sub${String(s.key||'').trim()?'':' on'}" onclick="setEditKey('')">指定なし</button></span>
+    </div>`);
+}
+function openEditCapoPick(){
+  const s = curEdit(); if (!s) return;
   const sound = shiftKey(s.key, s.transpose || 0);
-  const play  = shiftKey(sound, -(s.capo || 0));
-  const playMode = capoBaseOf(s) === 'play';
-  const same = (a, b) => normTok(String(a||'')).toLowerCase() === normTok(String(b||'')).toLowerCase();
-  const kchip = k => `<button class="pk${same(k, s.key)?' on':''}" onclick="setEditKey('${k}')">${k}</button>`;
-  const cchip = n => {
-    const p = shiftKey(sound, -n);
-    return `<button class="pk${n===(s.capo||0)?' on':''}${isEasyKey(p)?' easy':''}"
-      onclick="setEditCapo(${n})">${n===0?'なし':n}<i>${esc(p||'')}</i></button>`;
+  const chip = n => {
+    const pl = shiftKey(sound, -n);
+    return `<button class="pk${n===(s.capo||0)?' on':''}${isEasyKey(pl)?' easy':''}"
+      onclick="setEditCapo(${n})">${n===0?'なし':n}<i>${esc(pl||'')}</i></button>`;
   };
-  return `
-    <div class="field" style="margin:0 0 12px"><label>原曲キー（鳴る音）</label>
-      <div class="picker kp">
-        <span class="kprow"><i>メジャー</i>${KEY_MAJOR.map(kchip).join('')}</span>
-        <span class="kprow"><i>マイナー</i>${KEY_MINOR.map(kchip).join('')}</span>
-      </div></div>
-    <div class="field" style="margin:0 0 12px"><label>カポ（下はそのとき押さえるキー）</label>
-      <div class="picker kp"><span class="kprow">${[0,1,2,3,4,5,6,7,8,9,10,11,12].map(cchip).join('')}</span></div></div>
-    <div class="field" style="margin:0"><label>コード譜に書くのは</label>
-      <div class="picker" style="gap:6px">
-        <button class="pk sub${playMode?' on':''}" onclick="setCapoBase('play')">カポを付けて押さえる形</button>
-        <button class="pk sub${!playMode?' on':''}" onclick="setCapoBase('sound')">カポなしの鳴る音</button>
-      </div>
-      <p class="sub" style="margin:7px 0 0">いま <b>${esc(sound||'—')}</b> で鳴る曲です。カポ ${s.capo||0} なら押さえるのは
-        <b>${esc(play||'—')}</b>。${playMode
-          ? 'カポを選び直すと、<b>コード譜の文字も押さえる形に書き換わります</b>。'
-          : 'コード譜は鳴る音のまま置いておきます。'}</p></div>`;
+  popPick('カポを選ぶ', '下に出ているのが、そのとき押さえるキーです。枠の色が付いているのが押さえやすい形です。',
+    `<div class="picker kp"><span class="kprow">${[0,1,2,3,4,5,6,7,8,9,10,11,12].map(chip).join('')}</span></div>`);
+}
+// ♯ と ♭ の書き方を切り替える。譜面の文字も書き換える
+function cycleAcc(){
+  const s = curEdit(); if (!s) return;
+  const next = s.acc === 'sharp' ? 'flat' : s.acc === 'flat' ? '' : 'sharp';
+  s.acc = next || undefined;
+  const ta = curEditText();
+  if (ta && next){
+    const pos = ta.selectionStart;
+    ta.value = respellText(ta.value, next === 'flat');
+    if (editing){ /* 保存時に拾う */ } else { draft.text = ta.value; }
+    try{ ta.setSelectionRange(pos, pos); }catch(e){}
+  }
+  refreshKeyRow();
 }
 
 // キーを選ぶ（鳴る音のキー。コード譜の文字は動かさない）
@@ -1194,6 +1361,7 @@ function setEditKey(k){
   const s = curEdit(); if (!s) return;
   s.key = k;
   s.keyEdited = true; s.keyGuessed = false;
+  closePop();
   redrawKeyCard();
 }
 
@@ -1204,12 +1372,14 @@ function setEditCapo(n){
   const from = parseInt(s.capo, 10) || 0, to = Math.max(0, Math.min(12, n));
   if (ta && capoBaseOf(s) === 'play' && from !== to){
     const sound = shiftKey(s.key, s.transpose || 0);
-    const pref = keyPrefersFlat(shiftKey(sound, -to));
+    const pref = s.acc === 'flat' ? true : s.acc === 'sharp' ? false
+               : keyPrefersFlat(shiftKey(sound, -to));
     ta.value = retuneText(ta.value, from - to, pref);
     if (s === draft) draft.text = ta.value;
   }
   s.capo = to;
   s.textCapo = capoBaseOf(s) === 'play' ? to : 0;
+  closePop();
   redrawKeyCard();
 }
 
@@ -1807,7 +1977,7 @@ const FB_CONFIG = {
 };
 
 // このファイルの版。差し替えたかどうかの目印になる
-const APP_BUILD = 'V261105-05b';
+const APP_BUILD = 'V261109-09';
 
 let fb = null, fbUser = null, fbUnsub = null, syncState = 'off', pushTimer = null;
 let syncPaused = false;   // まとめ消しの最中だけ true。消しかけの状態が戻ってくるのを防ぐ
@@ -1817,8 +1987,8 @@ function initSync(){
   try{
     firebase.initializeApp(FB_CONFIG);
     fb = firebase.firestore();
-    // 圏外でも使えるように端末側にも控えを置く。
-    // 端末の容量が足りないときは、この控えをやめると書き込めるようになる
+    // 圏外でも使えるように端末側にもバックアップを置く。
+    // 端末の容量が足りないときは、これをやめると書き込めるようになる
     if (offlineWanted()){
       fb.enablePersistence({synchronizeTabs:true}).catch(e=>{
         offlineState = 'つけられませんでした（' + ((e && e.code) || '') + '）';
@@ -1839,18 +2009,18 @@ function initSync(){
 
 let syncError = '', quotaFull = false, quotaNote = '';
 let offlineState = '';
-// 控えを捨てる・設定を変えるために閉じている最中かどうか。この間のエラーは出さない
+// バックアップを削除・設定を変えるために閉じている最中かどうか。この間のエラーは出さない
 let tearingDown = false;
 
-/* ---- オフライン用の控えを使うかどうか ---- */
+/* ---- オフラインバックアップを使うかどうか ---- */
 const OFFLINE_KEY = 'cn_offline';
 function offlineWanted(){
   try{ return localStorage.getItem(OFFLINE_KEY) !== 'off'; }catch(e){ return true; }
 }
-// 控えをやめて開き直す。端末の容量が足りないときの逃げ道
+// オフラインバックアップをやめて開き直す。端末の容量が足りないときの逃げ道
 async function disableOffline(){
   try{ localStorage.setItem(OFFLINE_KEY, 'off'); }catch(e){}
-  alertShare('控えを使わない設定にしました。開き直します');
+  alertShare('オフラインバックアップを使わない設定にしました。開き直します');
   tearingDown = true;
   try{ if (fbUnsub){ fbUnsub(); fbUnsub = null; } }catch(e){}
   try{ if (metaUnsub){ metaUnsub(); metaUnsub = null; } }catch(e){}
@@ -1862,85 +2032,8 @@ async function disableOffline(){
 }
 function enableOffline(){
   try{ localStorage.setItem(OFFLINE_KEY, 'on'); }catch(e){}
-  alertShare('控えを使う設定にしました。開き直します');
+  alertShare('オフラインバックアップを使う設定にしました。開き直します');
   setTimeout(()=>location.reload(), 900);
-}
-
-// 端末が本当に書き込めるのか、小さく試してみる
-async function diagWrite(){
-  const box = document.getElementById('diagOut');
-  if (box) box.innerHTML = '<p class="hint" style="margin:8px 0 0">試しています…</p>';
-  const lines = [];
-  const info = await storageInfo();
-  if (info) lines.push('ブラウザの申告: 使用 ' + mb(info.usage) + ' / 上限 ' + mb(info.quota));
-  const list = await audioList();
-  lines.push('音源: ' + list.length + ' 件 / ' + mb(list.reduce((a,x)=>a+x.size,0)));
-  lines.push('オフライン用の控え: ' + (offlineState || '不明'));
-  const ci = await cacheInfo();
-  lines.push('溜め込んだファイル: ' + ci.files + ' 件 / ' + mb(ci.bytes) +
-             (ci.outside ? '（うち外のサイトのもの ' + ci.outside + ' 件）' : '') +
-             (ci.names.length ? ' [' + ci.names.join(', ') + ']' : ''));
-  // 端末に残っている置き場を全部出す
-  try{
-    if (indexedDB.databases){
-      // 名前のままだと分かりにくいので、何の置き場かを添える
-      const label = nm =>
-        /^chordnote$/.test(nm)            ? nm + '（音源）' :
-        /^firestore/.test(nm)             ? nm + '（オフライン用の控え）' :
-        /^firebaseLocalStorageDb/.test(nm)? nm + '（ログイン情報）' :
-        /^firebase-heartbeat/.test(nm)    ? nm + '（Firebase の稼働記録・消さなくてよい）' :
-        /^keyval-store$/.test(nm)         ? nm + '（画像読み取りの辞書）' :
-        nm + '（不明）';
-      const dbs = (await indexedDB.databases()).map(d=>d && d.name).filter(Boolean);
-      lines.push('端末の置き場:' + (dbs.length ? '\n  - ' + dbs.map(label).join('\n  - ') : ' なし'));
-    }
-  }catch(e){}
-
-  // どこまで書けるか、小さい方から試す
-  const probe = 'cn_probe_' + Date.now();
-  let okUpto = 0, verdict = '';
-  try{
-    const db = await new Promise((res,rej)=>{
-      const rq = indexedDB.open(probe, 1);
-      rq.onupgradeneeded = ()=>rq.result.createObjectStore('t');
-      rq.onsuccess = ()=>res(rq.result);
-      rq.onerror = ()=>rej(rq.error);
-    });
-    for (const kb of [16, 256, 1024, 4096]){
-      const blob = new Blob([new Uint8Array(kb * 1024)]);
-      const good = await new Promise(res=>{
-        const tx = db.transaction('t','readwrite');
-        tx.objectStore('t').put(blob, 'p' + kb);
-        tx.oncomplete = ()=>res(true);
-        tx.onerror = ()=>res(false);
-        tx.onabort = ()=>res(false);
-      });
-      if (!good) break;
-      okUpto = kb;
-    }
-    db.close();
-    indexedDB.deleteDatabase(probe);
-    verdict = okUpto >= 4096 ? '書き込みの余裕: 4MB まで入った（十分）'
-            : okUpto ? '書き込みの余裕: ' + (okUpto >= 1024 ? (okUpto/1024)+'MB' : okUpto+'KB') + ' までしか入らない'
-            : '書き込み: まったくできない';
-  }catch(e){
-    verdict = '書き込み: 試せなかった（' + ((e && (e.name||e.message)) || '') + '）';
-  }
-  lines.push(verdict);
-  const bad = okUpto < 1024;
-  const off = !offlineWanted();
-  if (ci.bytes > 20*1024*1024 || ci.outside > 20)
-    lines.push('→ オフライン用に溜め込んだものが大きすぎます。下の「溜め込みを捨てる」で空けてください。');
-  lines.push(bad
-    ? '→ 余裕がありません。「溜め込みを捨てる」を押して、それでも直らなければパソコンの空きディスクを増やしてください。'
-    : '→ 余裕があります。この状態なら容量のエラーは出ないはずです。');
-  if (bad || ci.bytes > 20*1024*1024)
-    lines.push('※ 上の「使用」の数字は、溜め込みが残っていると実際より大きく出ることがあります。');
-  if (box) box.innerHTML = `<div class="syncerr" style="margin-top:10px">
-    <b>調べた結果</b><code id="diagCode">${esc(lines.join('\n'))}</code>
-    <div class="btnrow" style="margin-top:2px">
-      <button class="mini" onclick="copyText(document.getElementById('diagCode').textContent)">この内容をコピー</button>
-    </div></div>`;
 }
 
 function showSyncError(e, where){
@@ -2035,7 +2128,7 @@ async function pushAll(){
 // 送信済みの内容を覚えておき、変わった曲だけ書き込む
 let pushed = new Map();   // id -> JSON文字列
 // クラウドに送らない項目。端末ごとに違ってよいものは外す。
-// （曲を開くたびに書き込みが走って、端末の控えが膨らむのを防ぐ）
+// （曲を開くたびに書き込みが走って、端末のバックアップが膨らむのを防ぐ）
 const LOCAL_ONLY = ['plays', 'lastOpen', 'hasAudio'];
 function forCloud(s){
   const out = {};
@@ -2061,7 +2154,7 @@ function schedulePush(){
       const deletes = [...pushed.keys()].filter(id=>!nowIds.has(id));
       if (!writes.length && !deletes.length) return;
 
-      // 1回のまとめ書きを小さくする（端末の控えが一度に膨らまないように）
+      // 1回のまとめ書きを小さくする（端末のバックアップが一度に膨らまないように）
       const ops = [...writes.map(w=>({t:'w', ...w})), ...deletes.map(id=>({t:'d', id}))];
       for (let i = 0; i < ops.length; i += 50){
         const b = fb.batch();
@@ -2103,14 +2196,11 @@ function renderSyncBar(){
   const errBox = quotaFull
     ? `<div class="syncerr"><b>この端末の保存容量がいっぱいです</b>
         <p style="margin:6px 0 0;font-size:.82rem;line-height:1.6">
-          譜面そのものは消えていません。曲に付けた音源が場所を取っていることが多いので、
-          下の「空き容量を見る」から音源を外すか、オフライン用の控えを捨ててください。</p>
+          譜面そのものは消えていません。「空き容量を見る」から音源を外すか、
+          オフラインバックアップを削除してください。</p>
         ${quotaNote ? `<p style="margin:4px 0 0;font-size:.82rem;line-height:1.6"><b>${esc(quotaNote)}</b></p>` : ''}
-        <p style="margin:4px 0 0;font-size:.8rem;line-height:1.6">
-          使用量が上限に届いていなくても、<b>パソコンの空きディスクが少ないと</b>同じエラーが出ます。
-          その場合はパソコン側の空き容量も確かめてください。</p>
         <button class="mini" onclick="openStorage()">空き容量を見る</button>
-        ${offlineWanted() ? '<button class="mini" onclick="disableOffline()">控えを使わない設定にして開き直す</button>' : ''}
+        ${offlineWanted() ? '<button class="mini" onclick="disableOffline()">オフラインバックアップをやめて開き直す</button>' : ''}
         <button class="mini" onclick="copyErr()">エラー内容をコピー</button>
         <details style="margin-top:7px"><summary style="font-size:.76rem;cursor:pointer">くわしい内容</summary>
           <code>${esc(syncError)}</code></details></div>`
@@ -2330,7 +2420,7 @@ async function loadShare(id){
 
 /* ============ 4.8 Google ドライブへのバックアップ ============ */
 /* 普段の読み書きは Firebase。ドライブには保存のたびに .md を書き出して、
-   自分で見られる控え（正本）を置いておく。
+   自分で中身を見られるバックアップを置いておく。
    アプリが触れるのは自分で作ったファイルだけ（drive.file の権限）。 */
 const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
 const DRIVE_ROOT  = 'コードノート';
@@ -2704,14 +2794,12 @@ function drawDrive(){
     </div>
     <p class="sub">マイドライブの中に「<b>${DRIVE_ROOT}</b>」というフォルダを作って、
       ジャンルごとに曲を <b>.md</b> で置いていきます。ドライブのほかの中身は見ません。
-      普段の同期は今までどおり Firebase が担当し、ドライブは<b>自分で見られる控え</b>です。<br>
+      普段の同期は今までどおり Firebase が担当し、ドライブは<b>自分で中身を見られるバックアップ</b>です。<br>
       曲名やジャンルを変えると、<b>ドライブ側も名前を変えて移します</b>（作り直しません）。
-      「いますぐ全部書き出す」を押すと、消した曲のファイルをゴミ箱へ、
-      どの曲にもひも付かないファイルを「${DRIVE_OLD}」フォルダへまとめます。</p>
+      ドライブの後始末は「読み込み済みの曲を整理し直す」でまとめて行います。</p>
     <div class="btnrow">
       ${on
-        ? `<button class="ghost" onclick="runDriveBackup(true)" ${driveBusy?'disabled':''}>いますぐ全部書き出す</button>
-           <button class="ghost" onclick="driveRestore()" ${driveBusy?'disabled':''}>ドライブから読み戻す</button>
+        ? `<button class="ghost" onclick="driveRestore()" ${driveBusy?'disabled':''}>ドライブから読み戻す</button>
            <button class="ghost danger" onclick="disconnectDrive()">連携をやめる</button>`
         : `<button class="act" onclick="connectDrive()">ドライブにつなぐ</button>`}
     </div>
@@ -2760,10 +2848,10 @@ try{
   const m = JSON.parse(localStorage.getItem('cn_meta') || '{}');
   if (Array.isArray(m.playlists)) playlists = m.playlists;
   if (Array.isArray(m.myChords))  myChords  = m.myChords;
-  // 以前の「1つだけのプレイリスト」を引き継ぐ
+  // 以前の「1つだけのリスト」を引き継ぐ
   const oldPl = JSON.parse(localStorage.getItem('cn_playlist') || 'null');
   if (!playlists.length && Array.isArray(oldPl) && oldPl.length)
-    playlists = [{id:'pl1', name:'プレイリスト', songs:oldPl}];
+    playlists = [{id:'pl1', name:'セットリスト', songs:oldPl}];
 }catch(e){}
 
 function persistMeta(){
@@ -2873,7 +2961,7 @@ function renderSheet(song, opts){
   opts = opts || {};
   const blocks = parseBody(song.text);
   const n = shiftOf(song);
-  const pref = n ? keyPrefersFlat(shownKeyOf(song)) : false;
+  const pref = accPref(song, n);
   const el = document.createElement('div');
   el.id = 'sheet';
   el.style.setProperty('--sheet-size', (song.sheetSize || 16) + 'px');
@@ -2981,7 +3069,7 @@ function renderTabs(){
     ? (playlists.length
         ? [['list','楽曲リスト','list'],['pl','セットリスト','play'],['ch','コード','chord']]
         : [['list','楽曲リスト','list'],['ch','コード','chord']])
-    : [['list','楽曲リスト','list'],['pl','プレイリスト','play'],['new','新規登録','add'],['ch','コード','chord']];
+    : [['list','楽曲リスト','list'],['pl','セットリスト','play'],['new','新規登録','add'],['ch','コード','chord']];
   document.getElementById('tabs').style.gridTemplateColumns = `repeat(${defs.length},1fr)`;
   document.getElementById('tabs').innerHTML = defs.map(([k,label,ic])=>
     `<button role="tab" aria-selected="${tab===k&&!openSong}" onclick="go('${k}')">
@@ -3071,6 +3159,61 @@ function bindSwipe(el){
     if (go) songStep(dx < 0 ? 1 : -1);
   }, {passive:true});
   el.addEventListener('touchcancel', reset, {passive:true});
+}
+
+/* ---- 行を左右になぞると、かくれているボタンが出てくる ---- */
+let swRows = [];
+function closeSwipes(except){
+  swRows.forEach(f=>{ if (f.el !== except) f.close(); });
+}
+// 「⋯」を押したときも同じトレイを出す（パソコン・読み上げ用）
+function swipeMore(btn){
+  const el = btn.closest('.swipe'); if (!el) return;
+  const f = swRows.find(x=>x.el === el); if (!f) return;
+  closeSwipes(el);
+  f.toggleRight();
+}
+function bindSwipeRows(root){
+  swRows = [];
+  root.querySelectorAll('.swipe').forEach(el=>{
+    const body = el.querySelector('.swbody');
+    if (!body) return;
+    const lt = el.querySelector('.swact.left'), rt = el.querySelector('.swact.right');
+    const LW = ()=> lt ? lt.offsetWidth : 0;
+    const RW = ()=> rt ? rt.offsetWidth : 0;
+    let x0 = null, y0 = 0, lock = false, at = 0;
+    const put = v => { body.style.transform = v ? 'translateX(' + v.toFixed(1) + 'px)' : ''; };
+    const snap = v => { body.style.transition = 'transform .18s ease'; at = v; put(v); };
+    const f = {
+      el,
+      close: ()=>{ if (at) snap(0); },
+      toggleRight: ()=> snap(at ? 0 : -RW())
+    };
+    swRows.push(f);
+    el.addEventListener('touchstart', e=>{
+      if (e.touches.length !== 1){ x0 = null; return; }
+      x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; lock = false;
+      body.style.transition = 'none';
+    }, {passive:true});
+    el.addEventListener('touchmove', e=>{
+      if (x0 === null) return;
+      const dx = e.touches[0].clientX - x0, dy = e.touches[0].clientY - y0;
+      if (!lock && Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(dy) * 1.4){ lock = true; closeSwipes(el); }
+      if (lock){
+        if (e.cancelable) e.preventDefault();
+        put(Math.max(-RW() - 18, Math.min(LW() + 18, at + dx)));
+      }
+    }, {passive:false});
+    el.addEventListener('touchend', e=>{
+      if (x0 === null) return;
+      if (lock){
+        const v = at + (e.changedTouches[0].clientX - x0);
+        snap(v < -RW()/2 ? -RW() : v > LW()/2 ? LW() : 0);
+      }
+      x0 = null;
+    }, {passive:true});
+    el.addEventListener('touchcancel', ()=>{ snap(0); x0 = null; }, {passive:true});
+  });
 }
 
 function esc(s){ return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
@@ -3232,6 +3375,10 @@ function switchVersion(id){
 }
 
 function render(){
+  renderInner();
+  try{ bindSwipeRows(document.getElementById('view')); }catch(e){}
+}
+function renderInner(){
   renderTabs();
   const hdr = document.getElementById('hdrInner');
   const view = document.getElementById('view');
@@ -3246,53 +3393,20 @@ function render(){
       <div class="hdr-title">編集${versionsOf(s).length>1?`<div class="hdr-sub2">${esc(vLabel(s))}</div>`:''}</div>
       <button class="ghost" onclick="saveAsVersion()">別バージョンで保存</button>
       <button class="act" onclick="saveEdit()">上書き保存</button>`;
-    const folders = genreOptions();
     const d = document.createElement('div');
     d.innerHTML = `
       <div class="card">
-        <div class="field"><label for="eTitle">曲名</label>
-          <input type="text" id="eTitle" value="${esc(s.title||'')}"></div>
-        <div class="field"><label for="eArtist">アーティスト</label>
-          <input type="text" id="eArtist" value="${esc(s.artist||'')}"></div>
-        <div class="field"><label for="eVer">バージョン名</label>
-          <input type="text" id="eVer" value="${esc(s.vname||'')}"
-            placeholder="例: 女性キー / 2015年版 / 弾き語り版（空のままでも可）">
-          <p class="sub" style="margin:5px 0 0">同じ曲名でアレンジ違いを分けたいときに付けます。${
-            versionsOf(s).length>1 ? `いまこの曲は ${versionsOf(s).length} バージョンあります。` : ''}</p></div>
-        <div class="field"><label for="eFolder">ジャンル</label>
-          <input type="text" id="eFolder" value="${esc(s.folder||'未分類')}" list="folderOpts">
-          <datalist id="folderOpts">${folders.map(f=>`<option value="${esc(f)}">`).join('')}</datalist>
-          <div class="picker cp" style="margin-top:7px">${folders.slice(0,12).map(f=>
-            `<button class="pk sub" onclick="document.getElementById('eFolder').value='${esc(f)}'">${esc(f)}</button>`
-          ).join('')}</div></div>
         <div class="erow">
-          <div class="field"><label for="eBpm">BPM</label>
-            <input type="text" id="eBpm" value="${s.bpm||100}"></div>
-          <div class="field"><label for="eBars">1行の小節数</label>
-            <input type="text" id="eBars" value="${s.barsPerLine||8}"></div>
+          <div class="field"><label for="eTitle">曲名</label>
+            <input type="text" id="eTitle" value="${esc(s.title||'')}"></div>
+          <div class="field"><label for="eArtist">アーティスト</label>
+            <input type="text" id="eArtist" value="${esc(s.artist||'')}"></div>
+          <div class="field"><label for="eVer">バージョン名</label>
+            <input type="text" id="eVer" value="${esc(s.vname||'')}" placeholder="例: 女性キー"></div>
         </div>
       </div>
-      <div class="card" id="keyCard">${editKeyCard(s)}</div>
-      <div class="card">
-        <label style="display:block;font-size:.74rem;font-weight:700;letter-spacing:.05em;color:var(--fg-dim);margin-bottom:6px">コードを入れる</label>
-        <div class="picker cp" id="palette"></div>
-      </div>
-      <div class="card">
-        <label for="memoBox" style="display:block;font-size:.74rem;font-weight:700;letter-spacing:.05em;color:var(--fg-dim);margin-bottom:6px">メモを入れる</label>
-        <p class="sub" style="margin:0 0 8px">コード譜の<b>カーソルのところ</b>に差し込みます。コード行の途中でも、何もない行でも入ります。
-          括弧で囲んで入るので、コードとして読まれることはありません。</p>
-        <div class="mypk" style="width:100%">
-          <input type="text" id="memoBox" style="flex:1 1 auto;width:auto;min-width:0"
-            placeholder="例: 間奏ここだけ2回し"
-            onkeydown="if(event.key==='Enter'){event.preventDefault();insertMemo()}">
-          <button class="act" onclick="insertMemo()">入れる</button>
-        </div>
-        <div class="picker cp" style="margin-top:8px">${
-          ['2回し','くりかえし','ここから','ここまで','女性キー','1番だけ','2番だけ','半音下げ',
-           'イントロ','間奏','アウトロ','フェードアウト']
-          .map(m=>`<button class="pk sub" onclick="insertMemo('${m}')">${m}</button>`).join('')}</div>
-      </div>
-      <p class="hint" style="margin:0 0 10px">左右は同じ文字・同じ桁で出しています。左の <b>＋</b> / <b>♪</b> で、その行をコード行か歌詞行かを切り替えられます。コード名を押すと押さえ方が出ます。</p>
+      <div class="card" id="keyCard">${editInfoRow(s)}</div>
+      ${chordBarHtml()}
       <div class="split">
         <div class="card sp-a">
           <h2>コード譜</h2>
@@ -3303,6 +3417,7 @@ function render(){
           <div id="editPrev" onscroll="syncScroll('editPrev','eText')"></div>
         </div>
       </div>
+      ${memoBarHtml()}
       <div class="card">
         <h2>${versionsOf(s).length>1 ? 'このバージョンを削除' : 'この曲を削除'}</h2>
         <p class="sub">元に戻せません。先に書き出しておくと安心です。${
@@ -3366,7 +3481,7 @@ function render(){
     bar.innerHTML = `<label style="font-size:.74rem;font-weight:700;letter-spacing:.05em;color:var(--fg-dim);display:block;margin-bottom:7px">スクロール速度</label>
       <div class="slider"><input type="range" id="bpmRange" min="40" max="200" value="${s.bpm}"
         oninput="setBpm(this.value)"><span class="bpm" id="bpmOut">${s.bpm} BPM</span></div>
-      <div class="stat"><span>1行 = <b>${s.barsPerLine}</b> 小節</span><span>1行あたり <b>${(60/s.bpm*s.barsPerLine*4).toFixed(1)}</b> 秒</span></div>`;
+`;
     view.appendChild(bar);
 
     if (!isViewer){
@@ -3422,11 +3537,12 @@ function render(){
       if (storageOpen){
         const sb = document.createElement('div');
         sb.className = 'card';
-        sb.style.marginBottom = '14px';
+        sb.id = 'storageCard';
+        sb.style.marginTop = '12px';
         sb.innerHTML = `<div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
           <h2 style="margin:0;flex:1">端末の空き容量</h2>
           <button class="mini" onclick="closeStorage()">閉じる</button></div><div id="storageBox"></div>`;
-        d.prepend(sb);
+        d.appendChild(sb);
       }
       view.appendChild(d);
       renderSyncBar();
@@ -3448,7 +3564,8 @@ function render(){
 
     // 画面に出ている順番をそのまま控える（ページめくりの並び）
     const shownOrder = [];
-    const rows = items => (shownOrder.push(...items.map(x=>x.id)), items).map(x=>`<div class="songrow${selected.has(x.id)?' sel':''}">
+    const rows = items => (shownOrder.push(...items.map(x=>x.id)), items).map(x=>{
+      const inner = `<div class="songrow${selected.has(x.id)?' sel':''}">
         ${selectMode
           ? `<input type="checkbox" ${selected.has(x.id)?'checked':''} onchange="toggleSel('${x.id}')" aria-label="選ぶ">`
           : `<button class="star${x.fav?' on':''}" onclick="toggleFav('${x.id}')" aria-label="お気に入り">${x.fav?'★':'☆'}</button>`}
@@ -3456,7 +3573,14 @@ function render(){
           (()=>{const n=versionsOf(x).length; return n>1?`<i class="verbadge">${n}バージョン</i>`:'';})()}
           <div class="ar">${[esc(x.artist||''), versionsOf(x).length>1?esc(vLabel(x)):'',
             x.plays?x.plays+'回':'', x.hasAudio?'♪音源あり':''].filter(Boolean).join(' · ')}</div></button>
-        <span class="kv">${esc(x.key||'?')}${x.capo?' / Capo'+x.capo:''}</span></div>`).join('');
+        <span class="kv">${esc(x.key||'?')}${x.capo?' / Capo'+x.capo:''}</span>
+        ${isViewer||selectMode?'':`<button class="swmore" onclick="swipeMore(this)" aria-label="操作">⋯</button>`}</div>`;
+      if (isViewer || selectMode) return inner;
+      return `<div class="swipe">
+        <div class="swact left"><button onclick="swipeAdd('${x.id}')">セットリストに追加</button></div>
+        <div class="swact right"><button class="sw-del" onclick="swipeDel('${x.id}')">削除</button></div>
+        <div class="swbody">${inner}</div></div>`;
+    }).join('');
 
     if (folderFilter === 'fav'){
       html += favs.length ? `<div class="secthead">お気に入り</div><div class="songlist">${rows(favs)}</div>`
@@ -3480,7 +3604,7 @@ function render(){
     if (selectMode){
       html = `<div class="selbar">
         <button class="mini" onclick="moveSelected()" ${selected.size?'':'disabled'}>ジャンルを変える</button>
-        <button class="mini" onclick="addSelectedToPlaylist()" ${selected.size?'':'disabled'}>プレイリストに追加</button>
+        <button class="mini" onclick="addSelectedToPlaylist()" ${selected.size?'':'disabled'}>セットリストに追加</button>
         <button class="mini" onclick="openMerge()" ${selected.size>1?'':'disabled'}>バージョンにまとめる</button>
         <button class="mini" onclick="exportSelected()" ${selected.size?'':'disabled'}>書き出し</button>
         <button class="mini" onclick="shareSelected()" ${selected.size?'':'disabled'}>共有リンクを作る</button>
@@ -3505,11 +3629,12 @@ function render(){
         <button onclick="askResetAll()">すべての曲を消す</button>`:''}</div>`;
     }
     if (storageOpen){
-      html = `<div class="card" style="margin-bottom:14px">
+      // 押したボタンのすぐ下に出す（上に戻らなくて済むように）
+      html += `<div class="card" id="storageCard" style="margin-top:12px">
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
           <h2 style="margin:0;flex:1">端末の空き容量</h2>
           <button class="mini" onclick="closeStorage()">閉じる</button></div>
-        <div id="storageBox"></div></div>` + html;
+        <div id="storageBox"></div></div>`;
     }
     d.innerHTML = html;
     view.appendChild(d);
@@ -3527,14 +3652,21 @@ function render(){
         ${isViewer?'':'<button class="act" onclick="newPlaylist()">＋ 新しいセットリスト</button>'}`;
       const d = document.createElement('div');
       d.innerHTML = playlists.length
-        ? `<div class="pl">` + playlists.map(x=>`
-            <div class="r">
+        ? `<div class="pl">` + playlists.map(x=>{
+            const inner = `<div class="r">
               <button class="nm" style="flex:1;text-align:left;min-width:0" onclick="openPl('${x.id}')">
                 ${esc(x.name)}${x.partial?'<em class="edited">一部の曲のみ</em>':''}
                 <div class="ar">${x.songs.length} 曲${x.partial?` / 全${x.total}曲`:''}</div></button>
               ${isViewer?'':`<button class="mv" onclick="renamePl('${x.id}')" aria-label="名前を変える">✎</button>
-              <button class="mv" onclick="askDeletePl('${x.id}')" aria-label="削除">✕</button>`}
-            </div>`).join('') + `</div>`
+              <button class="mv" onclick="askDeletePl('${x.id}')" aria-label="削除">✕</button>
+              <button class="swmore" onclick="swipeMore(this)" aria-label="操作">⋯</button>`}
+            </div>`;
+            if (isViewer) return inner;
+            return `<div class="swipe">
+              <div class="swact left"><button class="sw-alt" onclick="exportPl('${x.id}')">書き出し</button></div>
+              <div class="swact right"><button onclick="sharePl('${x.id}')">共有</button></div>
+              <div class="swbody">${inner}</div></div>`;
+          }).join('') + `</div>`
         : `<div class="card" style="text-align:center;padding:30px 20px">
              <h2 style="margin-bottom:8px">セットリストがありません</h2>
              <p class="sub" style="margin-bottom:16px">ライブ用・リハ用など、演奏する順に曲を並べておけます。</p>
@@ -3612,29 +3744,18 @@ function render(){
             <input type="text" id="bTitle" value="${esc(b.title||'')}"></div>
           <div class="field"><label for="bArtist">アーティスト</label>
             <input type="text" id="bArtist" value="${esc(b.artist||'')}"></div>
+          <div class="field"><label for="bFolder">ジャンル</label>
+            <input type="text" id="bFolder" value="${esc(b.folder||'')}" list="bgOpts" placeholder="未分類">
+            <datalist id="bgOpts">${opts.map(f=>`<option value="${esc(f)}">`).join('')}</datalist></div>
           <div class="field"><label for="bKey">原曲キー</label>
             <input type="text" id="bKey" value="${esc(b.key||'')}" oninput="batchPreview()"></div>
           <div class="field"><label for="bCapo">カポ</label>
             <input type="text" id="bCapo" value="${b.capo||0}" oninput="batchPreview()"></div>
         </div>
-        <div class="field" style="margin:0"><label for="bFolder">ジャンル</label>
-          <input type="text" id="bFolder" value="${esc(b.folder||'')}" list="bgOpts">
-          <datalist id="bgOpts">${opts.map(f=>`<option value="${esc(f)}">`).join('')}</datalist>
-          <div class="picker cp" style="margin-top:7px">${opts.slice(0,10).map(f=>
-            `<button class="pk sub" onclick="document.getElementById('bFolder').value='${esc(f)}'">${esc(f)}</button>`
-          ).join('')}</div></div>
+        <div class="picker cp" style="margin-top:9px">${opts.slice(0,10).map(f=>
+          `<button class="pk sub" onclick="document.getElementById('bFolder').value='${esc(f)}'">${esc(f)}</button>`
+        ).join('')}</div>
       </div>
-      <div class="card">
-        <label for="memoBox" style="display:block;font-size:.74rem;font-weight:700;letter-spacing:.05em;color:var(--fg-dim);margin-bottom:6px">メモを入れる</label>
-        <div class="mypk" style="width:100%">
-          <input type="text" id="memoBox" style="flex:1 1 auto;width:auto;min-width:0"
-            placeholder="例: 間奏ここだけ2回し"
-            onkeydown="if(event.key==='Enter'){event.preventDefault();insertMemo()}">
-          <button class="act" onclick="insertMemo()">入れる</button>
-        </div>
-        <p class="hint" style="margin-top:6px">コード譜のカーソルのところに、括弧で囲んで差し込みます。</p>
-      </div>
-      <p class="hint" style="margin:0 0 10px">左右は同じ文字・同じ桁で出しています。左の <b>＋</b> / <b>♪</b> で、その行をコード行か歌詞行かを切り替えられます。</p>
       <div class="split">
         <div class="card sp-a">
           <h2>コード譜</h2>
@@ -3645,6 +3766,7 @@ function render(){
           <div id="bPrev" onscroll="syncScroll('bPrev','bText')"></div>
         </div>
       </div>
+      ${memoBarHtml()}
       <div class="btnrow" style="margin-bottom:20px">
         <button class="act" onclick="closeBatchEdit(true)">直して一覧に戻る</button>
         <button class="ghost" onclick="closeBatchEdit(false)">直さずに戻る</button>
@@ -3655,9 +3777,51 @@ function render(){
   }
 
   if (tab==='new'){
-    hdr.innerHTML = `<div class="hdr-title">新規登録<div class="hdr-sub" style="margin-top:2px">音から作る / ファイルから作る</div></div>`;
+    hdr.innerHTML = `<div class="hdr-title">新規登録<div class="hdr-sub" style="margin-top:2px">ファイル / テキスト / 音から作る</div></div>`;
     const d = document.createElement('div');
     d.innerHTML = `
+      <div class="card">
+        <h2>新規登録</h2>
+        <div class="drop" id="dropZone">
+          <p>ここにファイルやフォルダをドラッグ<br><span style="font-size:.74rem">.md / .txt / .doc / .docx / .pdf / 画像 / .zip</span></p>
+          <div class="btnrow" style="justify-content:center">
+            <button class="ghost" onclick="document.getElementById('pickFiles').click()">ファイルを選ぶ</button>
+            <button class="ghost" onclick="document.getElementById('pickDir').click()">フォルダを選ぶ</button>
+          </div>
+        </div>
+        <input type="file" id="pickDir" webkitdirectory directory multiple hidden onchange="takeFiles(this.files)">
+        <input type="file" id="pickFiles" multiple hidden accept=".md,.txt,.doc,.docx,.pdf,.jpg,.jpeg,.png,.gif,.bmp,.webp,.zip" onchange="takeFiles(this.files)">
+        <p class="hint">フォルダ名はジャンルとして引き継ぎます。ZIP は中を開いて、フォルダごと読み込んだときと同じように並べます。<br>
+          画像からの読み取りは間違いが混ざります。読み込んだあと必ず確認してください。</p>
+        <div id="batchOut"></div>
+      </div>
+      <div class="card">
+        <h2>貼り付けて作る</h2>
+        <p class="sub">コード譜のテキストを下の「コード譜」に貼り付けると、コード行と歌詞行を自動で振り分けます。全角英数・♭記号・中黒区切りはそのままで構いません。</p>
+        <div class="erow">
+          <div class="field"><label for="draftTitle">曲名</label>
+            <input type="text" id="draftTitle" value="${esc(draft.title)}" oninput="draft.title=this.value"></div>
+          <div class="field"><label for="draftArtist">アーティスト</label>
+            <input type="text" id="draftArtist" value="${esc(draft.artist||'')}" oninput="draft.artist=this.value"></div>
+        </div>
+        <div id="draftStat"></div>
+      </div>
+      <div class="card" id="keyCard">${editInfoRow(draft)}</div>
+      ${chordBarHtml()}
+      <div class="split">
+        <div class="card sp-a">
+          <h2>コード譜</h2>
+          <textarea id="draftText" oninput="draft.text=this.value;previewDraft()" onscroll="syncScroll('draftText','draftPrev')" placeholder="Ｇ　Ａｍ　Ｂｍ　Ｃ&#10;恋心を隠したまんまで">${esc(draft.text)}</textarea>
+        </div>
+        <div class="card sp-b">
+          <h2>表示の確認</h2>
+          <div id="draftPrev" onscroll="syncScroll('draftPrev','draftText')"></div>
+        </div>
+      </div>
+      ${memoBarHtml()}
+      <div class="btnrow" style="margin:12px 0 20px">
+        <button class="act" onclick="saveDraft()">保存する</button>
+      </div>
       <div class="card">
         <h2>音から作る</h2>
         <p class="sub">音源ファイルを読み込むと、コード進行・キー・テンポを解析します。自分の演奏でも、録音した曲でも構いません。</p>
@@ -3672,72 +3836,6 @@ function render(){
         <input type="file" id="pickAudio" accept="audio/*" hidden onchange="if(this.files[0])runAnalysis(this.files[0])">
         <p class="hint">マイクは空気中の音を拾います。自分の演奏でも、スピーカーから流れている曲でも構いません。停止すると自動で解析が始まります。</p>
         <div id="anaOut"></div>
-      </div>
-      <div class="card">
-        <h2>ファイルから作る</h2>
-        <p class="sub">コード譜のテキストを貼り付けるか、ファイルを読み込むと、コード行と歌詞行を自動で振り分けます。全角英数・♭記号・中黒区切りはそのままで構いません。</p>
-        <div class="erow">
-          <div class="field"><label for="draftTitle">曲名</label>
-            <input type="text" id="draftTitle" value="${esc(draft.title)}" oninput="draft.title=this.value"></div>
-          <div class="field"><label for="draftArtist">アーティスト</label>
-            <input type="text" id="draftArtist" value="${esc(draft.artist||'')}" oninput="draft.artist=this.value"></div>
-        </div>
-        <div class="field"><label for="draftFolder">ジャンル</label>
-          <input type="text" id="draftFolder" value="${esc(draft.folder||'')}"
-            oninput="draft.folder=this.value" list="gOpts" placeholder="未分類">
-          <datalist id="gOpts">${genreOptions().map(f=>`<option value="${esc(f)}">`).join('')}</datalist>
-          <div class="picker cp" style="margin-top:7px">${genreOptions().slice(0,10).map(f=>
-            `<button class="pk sub" onclick="draft.folder='${esc(f)}';document.getElementById('draftFolder').value='${esc(f)}'">${esc(f)}</button>`
-          ).join('')}</div></div>
-        <div class="btnrow">
-          <button class="ghost" onclick="document.getElementById('pickOne').click()">ファイルを1つ読み込む</button>
-          <button class="act" onclick="saveDraft()">保存する</button>
-        </div>
-        <input type="file" id="pickOne" accept=".md,.txt,.doc,.docx,.pdf,.jpg,.jpeg,.png,.gif,.bmp,.webp" hidden onchange="if(this.files[0])loadOne(this.files[0])">
-        <div id="draftStat"></div>
-      </div>
-      <div class="card" id="keyCard">${editKeyCard(draft)}</div>
-      <div class="card">
-        <label style="display:block;font-size:.74rem;font-weight:700;letter-spacing:.05em;color:var(--fg-dim);margin-bottom:6px">コードを入れる</label>
-        <div class="picker cp" id="palette"></div>
-      </div>
-      <div class="card">
-        <label for="memoBox" style="display:block;font-size:.74rem;font-weight:700;letter-spacing:.05em;color:var(--fg-dim);margin-bottom:6px">メモを入れる</label>
-        <div class="mypk" style="width:100%">
-          <input type="text" id="memoBox" style="flex:1 1 auto;width:auto;min-width:0"
-            placeholder="例: 間奏ここだけ2回し"
-            onkeydown="if(event.key==='Enter'){event.preventDefault();insertMemo()}">
-          <button class="act" onclick="insertMemo()">入れる</button>
-        </div>
-        <p class="hint" style="margin-top:6px">コード譜のカーソルのところに、括弧で囲んで差し込みます。</p>
-      </div>
-      <p class="hint" style="margin:0 0 10px">左右は同じ文字・同じ桁で出しています。左の <b>＋</b> / <b>♪</b> で、その行をコード行か歌詞行かを切り替えられます。
-        コード名を押すと押さえ方が出ます。</p>
-      <div class="split">
-        <div class="card sp-a">
-          <h2>コード譜</h2>
-          <textarea id="draftText" oninput="draft.text=this.value;previewDraft()" onscroll="syncScroll('draftText','draftPrev')" placeholder="Ｇ　Ａｍ　Ｂｍ　Ｃ&#10;恋心を隠したまんまで">${esc(draft.text)}</textarea>
-        </div>
-        <div class="card sp-b">
-          <h2>表示の確認</h2>
-          <div id="draftPrev" onscroll="syncScroll('draftPrev','draftText')"></div>
-        </div>
-      </div>
-      <div class="card">
-        <h2>フォルダから一括読み込み</h2>
-        <p class="sub">コード譜を入れてあるフォルダを丸ごと選ぶと、中のファイルをまとめて読み取ります。フォルダ名はジャンルとして引き継ぎます。あとでまとめて変えられます。</p>
-        <div class="drop" id="dropZone">
-          <p>ここにファイルやフォルダをドラッグ<br><span style="font-size:.74rem">.md / .txt / .doc / .docx / .pdf / 画像 / .zip</span></p>
-          <div class="btnrow" style="justify-content:center">
-            <button class="ghost" onclick="document.getElementById('pickDir').click()">フォルダを選ぶ</button>
-            <button class="ghost" onclick="document.getElementById('pickFiles').click()">ファイルを選ぶ</button>
-          </div>
-        </div>
-        <input type="file" id="pickDir" webkitdirectory directory multiple hidden onchange="takeFiles(this.files)">
-        <input type="file" id="pickFiles" multiple hidden accept=".md,.txt,.doc,.docx,.pdf,.jpg,.jpeg,.png,.gif,.bmp,.webp,.zip" onchange="takeFiles(this.files)">
-        <p class="hint">読めるのは .md / .txt / .doc / .docx / .pdf と画像、それに <b>.zip</b> です。ZIP は中を開いて、フォルダごと読み込んだときと同じように並べます。1曲だけ中身を見ながら直したいときは、上の「ファイルから作る」の「ファイルを1つ読み込む」を使ってください。<br>
-          画像からの読み取りは間違いが混ざります。読み込んだあと必ず確認してください。</p>
-        <div id="batchOut"></div>
       </div>
       `;
     view.appendChild(d);
@@ -3859,7 +3957,6 @@ function capo(n){
 function setBpm(v){
   const s=songs.find(x=>x.id===openSong); s.bpm=+v;
   document.getElementById('bpmOut').textContent = v+' BPM';
-  const st = document.querySelector('.stat'); if (st) st.children[1].innerHTML = `1行あたり <b>${(60/s.bpm*s.barsPerLine*4).toFixed(1)}</b> 秒`;
   persist();
 }
 function toggleScroll(){ scrolling ? stopScroll() : startScroll(); }
@@ -4066,7 +4163,7 @@ function livePreview(){
   if (!box) return;
   const s = songs.find(x=>x.id===editing); if (!s) return;
   const tmp = {...s, text: document.getElementById('eText').value,
-    barsPerLine: +document.getElementById('eBars').value || 8, transpose: 0,
+    transpose: 0,
     capo: s.capo || 0, textCapo: textCapoOf(s)};
   const keep = box.scrollTop, keepX = box.scrollLeft;
   box.innerHTML = '';
@@ -4080,7 +4177,7 @@ function livePreview(){
 function renderAligned(song, opts){
   opts = opts || {};
   const n = shiftOf(song);
-  const pref = n ? keyPrefersFlat(shownKeyOf(song)) : false;
+  const pref = accPref(song, n);
   const el = document.createElement('div');
   el.className = 'aligned';
   const lines = String(song.text == null ? '' : song.text).replace(/\r\n/g,'\n').split('\n');
@@ -4207,9 +4304,9 @@ function saveEdit(){
     return isNaN(v) ? fb : v; };
   s.title  = document.getElementById('eTitle').value.trim() || s.title;
   s.artist = document.getElementById('eArtist').value.trim();
-  s.folder = document.getElementById('eFolder').value.trim() || '未分類';
+  s.folder = String(s.folder||'').trim() || '未分類';
   s.bpm    = Math.max(30, Math.min(260, num('eBpm', s.bpm||100)));
-  s.barsPerLine = Math.max(1, Math.min(32, num('eBars', s.barsPerLine||8)));
+
   s.text   = document.getElementById('eText').value;
   const ev = document.getElementById('eVer');
   if (ev){
@@ -4228,7 +4325,8 @@ function saveEdit(){
 
 // コード譜のカーソル位置にメモを差し込む。括弧で囲むのでコードとは読まれない
 function insertMemo(text){
-  const ta = document.getElementById('eText') || document.getElementById('bText');
+  const ta = document.getElementById('eText') || document.getElementById('draftText')
+          || document.getElementById('bText');
   if (!ta) return;
   const box = document.getElementById('memoBox');
   let t = String(text != null ? text : (box ? box.value : '')).trim();
@@ -4291,9 +4389,9 @@ function saveAsVersion(){
         vname: uniqueVersionName(gid, v),
         title:  g('eTitle').trim() || base.title,
         artist: g('eArtist').trim(),
-        folder: g('eFolder').trim() || '未分類',
+        folder: String(base.folder||'').trim() || '未分類',
         bpm:    Math.max(30, Math.min(260, num('eBpm', base.bpm||100))),
-        barsPerLine: Math.max(1, Math.min(32, num('eBars', base.barsPerLine||8))),
+        barsPerLine: base.barsPerLine||8,
         text:   g('eText'),
         plays: 0, lastOpen: Date.now(), hasAudio: false, transpose: 0
       };
@@ -4495,48 +4593,62 @@ function tidyPlan(){
   return out;
 }
 
+let tidyDrive = true;
 function openTidy(){
   if (isViewer) return;
   const plan = tidyPlan();
-  document.getElementById('popName').textContent = '読み込み済みの曲を整理する';
+  const drive = (driveState === 'on');
+  const doDrive = drive && tidyDrive;
+  document.getElementById('popName').textContent = '読み込み済みの曲を整理し直す';
   document.getElementById('popDesc').textContent =
-    plan.length ? `${plan.length} 曲に変更があります。` : '変更が必要な曲はありません。';
+    plan.length ? `${plan.length} 曲に直すところがあります。` : '曲の欄に直すところはありません。';
   document.getElementById('popGrid').innerHTML = `<div style="flex:1 1 100%">
-    <label class="brow" style="margin-bottom:12px">
+    <label class="brow" style="margin-bottom:8px">
       <input type="checkbox" ${tidyRekey?'checked':''} onchange="tidyRekey=this.checked;openTidy()">
       <span class="bn">キーも推測し直す
         <div class="bf">自分で設定したキーも、譜面のコードから付け直します</div></span>
     </label>
+    ${drive ? `<label class="brow" style="margin-bottom:12px">
+      <input type="checkbox" ${tidyDrive?'checked':''} onchange="tidyDrive=this.checked;openTidy()">
+      <span class="bn">Google ドライブにも全部書き出す
+        <div class="bf">全曲を書き出し直して、消した曲のファイルをゴミ箱へ、
+          どの曲にもひも付かないファイルを「${DRIVE_OLD}」へまとめます</div></span>
+    </label>` : ''}
     ${plan.length ? `<div class="tidylist">` + plan.map(x=>`
         <div class="shrow" style="display:block">
           <b style="font-size:.86rem">${esc(x.title || '(曲名なし)')}</b>
           <div class="sf" style="margin-top:3px">${x.why.map(esc).join('<br>')}</div>
         </div>`).join('') + `</div>` : ''}
     <div class="btnrow" style="margin-top:12px">
-      ${plan.length ? '<button class="act" onclick="applyTidy()">整理する</button>' : ''}
-      <button class="ghost" onclick="closePop()">${plan.length?'やめる':'閉じる'}</button>
+      ${(plan.length || doDrive) ? '<button class="act" onclick="applyTidy()">整理する</button>' : ''}
+      <button class="ghost" onclick="closePop()">${(plan.length||doDrive)?'やめる':'閉じる'}</button>
     </div>
-    <p class="hint">元に戻せません。心配なら先に書き出してください。<br>
-      <b>コードの読み取り（スラッシュ・括弧・桁のずれ）は、ここを押さなくても直っています。</b>
-      譜面の文字そのものは触っていないので、開けばそのまま新しい読み方で出ます。<br>
-      ここで直すのは、曲名・アーティスト・キー・カポ・テンポの<b>欄</b>だけです。<br>
+    <p class="hint">直すのは曲名・アーティスト・キー・カポ・テンポの<b>欄</b>だけで、譜面の文字は触りません。
+      元に戻せないので、心配なら先に書き出してください。<br>
       古い読み取りで行が崩れている曲は、これでは直りません。元のファイルから取り込み直してください。</p>
   </div>`;
   document.getElementById('pop').hidden = false;
 }
-
-function applyTidy(){
+async function applyTidy(){
   const plan = tidyPlan();
-  if (!plan.length) return;
-  const byId = new Map(plan.map(x=>[x.id, x.next]));
-  songs = songs.map(s=>{
-    const n = byId.get(s.id);
-    return n ? {...n, v:2} : s;
-  });
-  persist();
+  const doDrive = (driveState === 'on') && tidyDrive;
+  if (!plan.length && !doDrive) return;
+  if (plan.length){
+    const byId = new Map(plan.map(x=>[x.id, x.next]));
+    songs = songs.map(s=>{
+      const n = byId.get(s.id);
+      return n ? {...n, v:2} : s;
+    });
+    persist();
+  }
   closePop();
   render();
-  alertShare(`${plan.length} 曲を整理しました`);
+  if (plan.length) alertShare(`${plan.length} 曲を整理しました`);
+  if (doDrive){
+    alertShare('ドライブに書き出しています…');
+    await runDriveBackup(true);
+    if (!driveError) alertShare('ドライブへの書き出しが終わりました');
+  }
 }
 
 /* ---- 全部消す ---- */
@@ -4797,6 +4909,25 @@ function askOk(){
   const cb = _askCb; _askCb = null;
   closePop();
   if (cb) cb(v);
+}
+
+// 行をなぞって出したボタンから呼ぶ
+function swipeAdd(id){ closeSwipes(); choosePlaylist([id]); }
+function swipeDel(id){ closeSwipes(); askDelete(id); }
+async function exportPl(id){
+  closeSwipes();
+  const pl = playlists.find(x=>x.id===id); if (!pl) return;
+  const items = withVersions(pl.songs.map(i=>songs.find(y=>y.id===i)).filter(Boolean));
+  if (!items.length){ alertShare('このセットリストには曲が入っていません'); return; }
+  if (items.length === 1){ exportSong(items[0].id); return; }
+  await zipSongs(items, pl.name);
+}
+function sharePl(id){
+  closeSwipes();
+  const pl = playlists.find(x=>x.id===id); if (!pl) return;
+  const items = withVersions(pl.songs.map(i=>songs.find(y=>y.id===i)).filter(Boolean));
+  if (!items.length){ alertShare('このセットリストには曲が入っていません'); return; }
+  createShare('some', items, pl.name);
 }
 
 function shareSong(id){
@@ -5325,35 +5456,6 @@ function importBatch(){
 const KEY_MAJOR = ['C','D♭','D','E♭','E','F','F#','G','A♭','A','B♭','B'];
 const KEY_MINOR = ['Am','B♭m','Bm','Cm','C#m','Dm','E♭m','Em','Fm','F#m','Gm','G#m'];
 
-function keyChips(){
-  const cur = (draft.key||'').trim();
-  const same = k => normTok(k).toLowerCase() === normTok(cur).toLowerCase();
-  const chip = k => `<button class="pk${same(k)?' on':''}" onclick="setDraftKey('${k}')">${k}</button>`;
-  return `<span class="kprow"><i>メジャー</i>${KEY_MAJOR.map(chip).join('')}</span>
-    <span class="kprow"><i>マイナー</i>${KEY_MINOR.map(chip).join('')}</span>
-    <span class="kprow"><button class="pk sub${cur?'':' on'}" onclick="setDraftKey('')">指定なし</button></span>`;
-}
-function capoChips(){
-  const cur = parseInt(draft.capo, 10) || 0;
-  return '<span class="kprow">' + [0,1,2,3,4,5,6,7,8,9,10,11,12].map(n=>
-    `<button class="pk${n===cur?' on':''}" onclick="setDraftCapo(${n})">${n===0?'なし':n}</button>`).join('')
-    + '</span>';
-}
-function setDraftKey(k){
-  draft.key = k;
-  draft.keyEdited = true;
-  draft.keyGuessed = false;
-  const box = document.getElementById('keyPick');
-  if (box) box.innerHTML = keyChips();
-  previewDraft();
-}
-function setDraftCapo(n){
-  draft.capo = n;
-  const box = document.getElementById('capoPick');
-  if (box) box.innerHTML = capoChips();
-  previewDraft();
-}
-
 /* ---- 別々に入っている曲を、ひとつのバージョン違いにまとめる ---- */
 let mergeIds = [], mergeBase = null;
 
@@ -5434,7 +5536,16 @@ function doMerge(){
 
 /* ---- 端末の空き容量 ---- */
 let storageOpen = false;
-function openStorage(){ storageOpen = true; go('list'); setTimeout(drawStorage, 30); }
+function openStorage(){
+  storageOpen = true;
+  go('list');
+  setTimeout(()=>{
+    drawStorage();
+    // 開いた欄が見える位置まで送る
+    const el = document.getElementById('storageCard');
+    if (el) el.scrollIntoView({behavior:'smooth', block:'center'});
+  }, 40);
+}
 function closeStorage(){ storageOpen = false; render(); }
 
 async function drawStorage(){
@@ -5472,33 +5583,21 @@ async function drawStorage(){
           ${orphans.length?`<button class="ghost" onclick="dropAudioAll(true)">いらない音源だけ外す（${orphans.length}件）</button>`:''}
           <button class="ghost danger" onclick="dropAudioAll(false)">音源をぜんぶ外す</button></div>`
       : `<p class="hint" style="margin:0">音源は入っていません。</p>`}
-    <div class="secthead" style="margin-top:20px">端末に保存（オフライン用）</div>
-    <p class="sub">圏外でも譜面を開けるように、クラウドにある内容の<b>コピーをこの端末にも置いて</b>います。
-      これを捨てても、<b>クラウド側の譜面は消えません</b>。次にネットにつないだときに降りてきます。
-      場所が足りないときや、表示がおかしいときに試してください。</p>
-    <div class="btnrow">
-      <button class="ghost" onclick="clearCache()">控えを捨てて読み込み直す</button>
-      ${offlineWanted()
-        ? '<button class="ghost danger" onclick="disableOffline()">控えを使わない設定にする</button>'
-        : '<button class="act" onclick="enableOffline()">控えを使う設定に戻す</button>'}
-    </div>
-    <p class="hint">いま: <b>${esc(offlineState || (offlineWanted()?'使う':'使わない'))}</b>。
-      「使わない」にすると、この端末に控えを置かなくなるので<b>容量のエラーが出なくなります</b>。
-      そのかわり<b>圏外では譜面を開けません</b>（ネットにつながっていれば今までどおり使えます）。</p>
-    <div id="cacheMsg"></div>
+    <p class="hint" style="margin-top:6px">音源はこの端末にだけ置いてあり、ほかの端末には同期されません。
+      外しても譜面は残ります。元の音源ファイルが手元にあれば、曲画面から付け直せます。</p>
+
     <div class="secthead" style="margin-top:22px">Google ドライブへのバックアップ</div>
     <div id="driveBox"></div>
-    <div class="secthead" style="margin-top:22px">うまくいかないとき</div>
-    <p class="sub">容量のエラーが続くときは、何が原因か調べられます。</p>
-    <div class="btnrow">
-      <button class="ghost" onclick="diagWrite()">書き込めるか調べる</button>
-      <button class="ghost danger" onclick="dropCaches()">溜め込みを捨てる</button>
-    </div>
-    <p class="hint">「溜め込み」は、オフラインでも開けるように取ってあるファイルです。
-      捨てても譜面は消えません。次にネットにつないだときに要るぶんだけ取り直します。</p>
-    <div id="diagOut"></div>
-    <p class="hint" style="margin-top:14px">音源はこの端末にだけ置いてあり、ほかの端末には同期されません。
-      外しても譜面は残ります。元の音源ファイルが手元にあれば、曲画面から付け直せます。</p>`;
+
+    <div class="secthead" style="margin-top:22px">オフラインバックアップ</div>
+    <p class="sub">圏外でも譜面を開けるように、この端末にもコピーを置いています。
+      削除してもクラウドの譜面は消えず、次にネットにつないだときに降りてきます。</p>
+    <div class="btnrow"><button class="ghost" onclick="clearCache()">オフラインバックアップを削除</button></div>
+    ${offlineWanted() ? '' : `<p class="hint" style="margin-top:8px">
+      いまは<b>オフラインバックアップを使わない設定</b>です。圏外では譜面を開けません。<br>
+      <button class="mini" onclick="enableOffline()">使う設定に戻す</button></p>`}
+    <div id="cacheMsg"></div>
+`;
 }
 
 // 空き容量の画面を描いたあとに、ドライブの欄も描く
@@ -5545,22 +5644,7 @@ function copyText(t){
     .catch(()=>alertShare('コピーできませんでした'));
 }
 
-// 溜め込みを捨てる
-async function dropCaches(){
-  const before = await cacheInfo();
-  // 先に仕組みを止める。止めずに捨てると、捨てた端から作り直される
-  try{
-    if (navigator.serviceWorker){
-      const rs = await navigator.serviceWorker.getRegistrations();
-      for (const r of rs) await r.unregister();
-    }
-  }catch(e){}
-  const n = await wipeCaches();
-  alertShare(before.files + '件・' + mb(before.bytes) + ' を捨てました。読み込み直します');
-  setTimeout(()=>location.reload(), 1200);
-}
-
-// 端末に置いてあるオフライン用の控えを捨てる。捨てたあとは読み込み直しが要る
+// 端末のオフラインバックアップを削除する。削除したあとは読み込み直しが要る
 async function clearCache(){
   const log = [];
   const box = document.getElementById('cacheMsg');
@@ -5580,14 +5664,14 @@ async function clearCache(){
   }catch(e){
     log.push('正規の手順: ' + ((e && (e.code || e.name)) || '') + ' ' + ((e && e.message) || String(e)));
   }
-  // だめでも、端末に残っている控えそのものを消しにいく
+  // だめでも、端末に残っているバックアップそのものを消しにいく
   let removed = 0, failed = [];
   try{
     let names = [];
     if (indexedDB.databases){
       names = (await indexedDB.databases()).map(d=>d && d.name).filter(Boolean);
     }
-    // 控えそのものだけを対象にする。
+    // バックアップそのものだけを対象にする。
     // firebase-heartbeat-database は Firebase が開きっぱなしにしている別物で、
     // 消す必要も無いし消せないので外す
     const targets = names.filter(nm=>/^firestore\b/i.test(nm));
@@ -5601,7 +5685,7 @@ async function clearCache(){
       });
       if (done) removed++; else failed.push(nm);
     }
-    log.push('控えの数: ' + targets.length + ' / 消せた: ' + removed +
+    log.push('バックアップの数: ' + targets.length + ' / 消せた: ' + removed +
              (failed.length ? ' / 消せなかった: ' + failed.join(', ') : ''));
   }catch(e){
     log.push('直接の削除: ' + ((e && e.message) || String(e)));
@@ -5610,12 +5694,12 @@ async function clearCache(){
   const nc = await wipeCaches();
   if (nc) log.push('溜め込み: ' + nc + ' 件を捨てた');
   if (!failed.length){
-    alertShare('控えを捨てました。読み込み直します');
+    alertShare('オフラインバックアップを削除しました。読み込み直します');
     setTimeout(()=>location.reload(), 800);
     return;
   }
-  showBoxError('cacheMsg', '控えを捨てきれませんでした', log.join('\n'),
-    'このページを<b>ほかのタブやウィンドウでも開いていると</b>、控えを掴んだままになって捨てられません。' +
+  showBoxError('cacheMsg', 'オフラインバックアップを削除しきれませんでした', log.join('\n'),
+    'このページを<b>ほかのタブやウィンドウでも開いていると</b>、削除できません。' +
     'ほかのタブを全部閉じてから、もう一度押してください。それでも消せないときは、' +
     'ブラウザを一度終了してから開き直してください。');
 }
@@ -5991,49 +6075,6 @@ function applyParsedToDraft(text, fileName){
   draft.keyEdited  = false;
 }
 
-async function loadOne(file){
-  const ext = (file.name.split('.').pop()||'').toLowerCase();
-  let text = '';
-  const busy = (msg)=>{ const el = document.getElementById('draftPrev');
-    if (el) el.innerHTML = `<p class="empty">${esc(msg)}</p>`; };
-  try{
-    if (ext === 'doc' || ext === 'docx' || ext === 'dot' || ext === 'rtf'){
-      busy('Word を読んでいます…');
-      // 拡張子より中身を信じる
-      text = (await isOle2(file)) ? await readDoc(file) : await readDocx(file);
-    }
-    else if (ext === 'pdf'){ busy('PDF を読んでいます…'); text = await readPdf(file); }
-    else if (['jpg','jpeg','png','gif','bmp','webp'].includes(ext)){
-      busy('画像から文字を読み取っています…');
-      text = await readImage(file, (pct, note)=>{
-        busy(note || (pct != null ? `文字を読み取っています… ${pct}%` : '準備しています…'));
-      });
-    }
-    else text = await readText(file);
-  }catch(e){
-    busy('読み取れませんでした: ' + (e.message||''));
-    return;
-  }
-  if (!text.trim()){
-    const el = document.getElementById('draftPrev');
-    if (el) el.innerHTML = `<p class="empty">文字が見つかりませんでした。<br>
-      <span style="font-size:.76rem">画像として作られた PDF には文字の情報がありません。その場合は画像に書き出してから読み込んでください。</span></p>`;
-    return;
-  }
-  applyParsedToDraft(text, file.name);
-  render();
-  setTimeout(()=>{
-    const el = document.getElementById('draftPrev');
-    if (el) el.scrollIntoView({behavior:'smooth', block:'start'});
-  }, 80);
-}
-
-function refreshKeyChips(){
-  const kb = document.getElementById('keyPick');
-  if (kb) kb.innerHTML = keyChips();
-  const cb = document.getElementById('capoPick');
-  if (cb) cb.innerHTML = capoChips();
-}
 function previewDraft(){
   const prev = document.getElementById('draftPrev');
   const stat = document.getElementById('draftStat');
@@ -6049,8 +6090,12 @@ function previewDraft(){
   if (!draft.artist && p.artist) draft.artist = p.artist;
   if (!draft.keyEdited && !draft.key && p.key){
     draft.key = p.key; draft.keyGuessed = !!p.keyGuessed;
-    const kc = document.getElementById('keyCard');
-    if (kc) kc.innerHTML = editKeyCard(draft);
+    const kb = document.getElementById('keyBtn');
+    if (kb) kb.innerHTML = keyBtnLabel(draft);
+    const kn = document.getElementById('keyNote');
+    if (kn) kn.innerHTML = keyNoteHtml(draft);
+    const cb = document.getElementById('capoBtn');
+    if (cb) cb.innerHTML = capoBtnLabel(draft);
   }
   const nChord = p.blocks.filter(b=>(b.chords||[]).length).length;
   const nLyric = p.blocks.reduce((a,b)=>a+((b.lyrics||[]).length),0);
@@ -6090,9 +6135,9 @@ function saveDraft(){
       capoBase: capoBaseOf(draft),
       textCapo: textCapoOf({...draft, capo: Math.max(0, Math.min(12, parseInt(draft.capo,10) || p.capo || 0))}),
       capo: Math.max(0, Math.min(12, parseInt(draft.capo,10) || p.capo || 0)),
-      bpm: p.bpm || 100, barsPerLine:8, transpose:0, plays:0, v:2, text});
+      acc: draft.acc, bpm: draft.bpm || p.bpm || 100, barsPerLine:8, transpose:0, plays:0, v:2, text});
     persist();
-    draft = {text:'', title:'', artist:'', key:'', capo:0, folder:'', capoBase:'play', transpose:0, keyEdited:false, keyGuessed:false};
+    draft = {text:'', title:'', artist:'', key:'', capo:0, folder:'', acc:undefined, capoBase:'play', transpose:0, keyEdited:false, keyGuessed:false};
     go('list');
     if (mode === 'version') alertShare('「' + vname + '」として足しました');
   };
