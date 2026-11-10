@@ -129,6 +129,10 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
 
 /* コード譜 */
 #sheet{font-size:var(--sheet-size,16px)}
+/* 中央ぞろえ。コードと歌詞の縦の関係は崩さない（かたまりの中は左ぞろえのまま） */
+#sheet.ctr{text-align:center}
+#sheet.ctr .seg,#sheet.ctr .lrow{text-align:left}
+#sheet.ctr .lrow{display:inline-block;max-width:100%}
 .blk{margin-bottom:2px}
 .spacer{height:1.1em}
 /* コードと、その下の歌詞を1組にして並べる。狭いときは組ごと折り返す */
@@ -448,6 +452,31 @@ textarea{min-height:190px;resize:vertical;white-space:pre;overflow-wrap:normal;o
 .stat{display:flex;gap:16px;flex-wrap:wrap;font-size:.78rem;color:var(--fg-dim);margin-top:10px}
 .stat b{color:var(--accent);font-family:var(--font-mono);font-variant-numeric:tabular-nums}
 .slider{display:flex;align-items:center;gap:10px}
+/* 速度バーが3分の2、のこり3分の1に「ぞろえ」と「文字サイズ」 */
+.ctrlrow{display:flex;gap:14px;align-items:flex-end}
+.ctrlrow .spd{flex:2 1 0;min-width:0}
+.ctrlrow .disp{flex:1 1 0;min-width:0;display:flex;gap:8px;position:relative}
+.ctrlrow .disp .dbtn{flex:1 1 0;min-width:0;background:var(--surface);border:1px solid var(--line);
+  border-radius:9px;padding:7px 6px;font:inherit;font-family:var(--font-ja);font-size:.78rem;
+  color:var(--fg);cursor:pointer;line-height:1.25;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.ctrlrow .disp .dbtn:hover{border-color:var(--accent)}
+.ctrlrow .disp .dbtn i{font-style:normal;display:block;font-size:.64rem;color:var(--fg-dim)}
+/* 文字サイズの上下バー */
+#sizePad{position:absolute;right:0;top:calc(100% + 7px);z-index:40;
+  background:var(--surface);border:1px solid var(--line);border-radius:11px;
+  box-shadow:0 8px 22px rgba(0,0,0,.18);padding:8px;display:flex;flex-direction:column;
+  align-items:center;gap:5px;min-width:74px}
+#sizePad button{width:100%;border:1px solid var(--line);background:var(--surface-2);
+  border-radius:8px;font:inherit;color:var(--fg);cursor:pointer;padding:5px 0;line-height:1}
+#sizePad .big{font-size:1.2rem;font-weight:700;padding:3px 0}
+#sizePad .szval{font-family:var(--font-mono);font-weight:700;font-size:.9rem;color:var(--accent)}
+#sizePad .auto{font-size:.68rem;font-family:var(--font-ja);padding:4px 0}
+@media (max-width:560px){
+  .ctrlrow{flex-wrap:wrap}
+  .ctrlrow .spd{flex:1 1 100%}
+  .ctrlrow .disp{flex:1 1 100%}
+}
 input[type=range]{flex:1 1 auto;accent-color:var(--accent);min-width:0}
 .bpm{font-family:var(--font-mono);font-weight:700;color:var(--accent);font-variant-numeric:tabular-nums;
   min-width:68px;text-align:right;font-size:.84rem}
@@ -1989,7 +2018,7 @@ const FB_CONFIG = {
 };
 
 // このファイルの版。差し替えたかどうかの目印になる
-const APP_BUILD = 'V261109-15';
+const APP_BUILD = 'V261110-22';
 
 let fb = null, fbUser = null, fbUnsub = null, syncState = 'off', pushTimer = null;
 let syncPaused = false;   // まとめ消しの最中だけ true。消しかけの状態が戻ってくるのを防ぐ
@@ -2968,6 +2997,80 @@ function makeSegments(chords, lyricText){
   return segs;
 }
 
+/* ---- 譜面の見た目（文字サイズ・ぞろえ）。曲ごとに持ち、無ければ端末の設定を使う ---- */
+function devGet(k){ try{ return localStorage.getItem(k); }catch(e){ return null; } }
+function devSet(k, v){ try{ v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); }catch(e){} }
+const SHEET_SIZE_DEF = 16;
+// 文字サイズ。曲の設定 → 端末の設定 → はじめの大きさ の順で決める
+function sheetSizeOf(s){
+  if (s && s.sheetSize) return s.sheetSize;
+  const d = parseInt(devGet('sheetSize'), 10);
+  return d ? d : SHEET_SIZE_DEF;
+}
+// 「自動」に戻してあるかどうか（ボタンの表示用）
+function sheetSizeIsAuto(s){
+  return !(s && s.sheetSize) && !parseInt(devGet('sheetSize'), 10);
+}
+function sheetAlignOf(s){
+  if (s && s.sheetAlign) return s.sheetAlign;
+  return devGet('sheetAlign') === 'center' ? 'center' : 'left';
+}
+// 画面の譜面に、いまの設定を当てる
+function applySheetLook(){
+  const s = songs.find(x=>x.id===openSong);
+  const box = document.getElementById('sheetBox') || document.getElementById('main');
+  const sheet = box && box.querySelector('#sheet');
+  if (!sheet) return;
+  sheet.classList.toggle('ctr', sheetAlignOf(s) === 'center');
+  const size = sheetSizeOf(s);
+  sheet.style.setProperty('--sheet-size', size + 'px');
+  const ab = document.getElementById('alignBtn');
+  if (ab) ab.innerHTML = (sheetAlignOf(s) === 'center' ? '中央ぞろえ' : '左ぞろえ') + '<i>押すと切り替え</i>';
+  const sb = document.getElementById('sizeBtn');
+  if (sb) sb.innerHTML = '文字 ' + (sheetSizeIsAuto(s) ? 'ふつう' : size) + '<i>押すと調整</i>';
+  const sv = document.getElementById('szVal');
+  if (sv) sv.textContent = size + 'px';
+}
+function toggleAlign(){
+  const s = songs.find(x=>x.id===openSong); if (!s) return;
+  const next = sheetAlignOf(s) === 'center' ? 'left' : 'center';
+  s.sheetAlign = next;
+  devSet('sheetAlign', next);
+  applySheetLook();
+  persist();
+}
+function openSizePad(){
+  const pad = document.getElementById('sizePad');
+  if (!pad) return;
+  pad.hidden = !pad.hidden;
+  if (!pad.hidden) applySheetLook();
+}
+// ほかのところを押したら、上下バーは引っこめる
+document.addEventListener('click', e=>{
+  const pad = document.getElementById('sizePad');
+  if (!pad || pad.hidden) return;
+  if (pad.contains(e.target)) return;
+  const sb = document.getElementById('sizeBtn');
+  if (sb && sb.contains(e.target)) return;
+  pad.hidden = true;
+}, true);
+function bumpSize(d){
+  const s = songs.find(x=>x.id===openSong); if (!s) return;
+  const now = sheetSizeOf(s);
+  const next = Math.max(9, Math.min(40, now + d));
+  s.sheetSize = next;
+  devSet('sheetSize', next);
+  applySheetLook();
+  persist();
+}
+function autoSize(){
+  const s = songs.find(x=>x.id===openSong); if (!s) return;
+  s.sheetSize = null;
+  devSet('sheetSize', null);
+  applySheetLook();
+  persist();
+}
+
 // opts.lineToggle を渡すと、各行の左に「コード行/歌詞行」の切り替えが出る
 function renderSheet(song, opts){
   opts = opts || {};
@@ -2976,7 +3079,9 @@ function renderSheet(song, opts){
   const pref = accPref(song, n);
   const el = document.createElement('div');
   el.id = 'sheet';
-  el.style.setProperty('--sheet-size', (song.sheetSize || 16) + 'px');
+  const _sz = sheetSizeOf(song);
+  el.style.setProperty('--sheet-size', (_sz || 16) + 'px');
+  if (sheetAlignOf(song) === 'center') el.classList.add('ctr');
 
   for (const b of blocks){
     if (b.blank){
@@ -3499,10 +3604,23 @@ function renderInner(){
     if (navPos){ const nv = document.getElementById('songNav'); if (nv) bindSwipe(nv); }
     const bar = document.createElement('div');
     bar.className = 'card';
-    bar.innerHTML = `<label style="font-size:.74rem;font-weight:700;letter-spacing:.05em;color:var(--fg-dim);display:block;margin-bottom:7px">スクロール速度</label>
-      <div class="slider"><input type="range" id="bpmRange" min="40" max="200" value="${s.bpm}"
-        oninput="setBpm(this.value)"><span class="bpm" id="bpmOut">${s.bpm} BPM</span></div>
-`;
+    bar.innerHTML = `<div class="ctrlrow">
+      <div class="spd">
+        <label style="font-size:.74rem;font-weight:700;letter-spacing:.05em;color:var(--fg-dim);display:block;margin-bottom:7px">スクロール速度</label>
+        <div class="slider"><input type="range" id="bpmRange" min="40" max="200" value="${s.bpm}"
+          oninput="setBpm(this.value)"><span class="bpm" id="bpmOut">${s.bpm} BPM</span></div>
+      </div>
+      <div class="disp">
+        <button class="dbtn" id="alignBtn" onclick="toggleAlign()"></button>
+        <button class="dbtn" id="sizeBtn" onclick="openSizePad()"></button>
+        <div id="sizePad" hidden>
+          <button class="big" onclick="bumpSize(1)" aria-label="大きく">＋</button>
+          <span class="szval" id="szVal"></span>
+          <button class="big" onclick="bumpSize(-1)" aria-label="小さく">−</button>
+          <button class="auto" onclick="autoSize()">自動</button>
+        </div>
+      </div>
+    </div>`;
     view.appendChild(bar);
 
     if (!isViewer){
@@ -3517,6 +3635,7 @@ function renderInner(){
     }
 
     view.appendChild(renderSheet(s));
+    applySheetLook();
     const tip = document.createElement('p');
     tip.className = 'hint';
     tip.style.marginTop = '18px';
