@@ -453,6 +453,18 @@ textarea{min-height:190px;resize:vertical;white-space:pre;overflow-wrap:normal;o
 .stat b{color:var(--accent);font-family:var(--font-mono);font-variant-numeric:tabular-nums}
 .slider{display:flex;align-items:center;gap:10px}
 /* 速度バーが3分の2、のこり3分の1に「ぞろえ」と「文字サイズ」 */
+/* 見出しの横に出す「?」。押すと説明が出る */
+.qb{border:1px solid var(--line);background:var(--surface);color:var(--fg-dim);
+  width:19px;height:19px;border-radius:50%;font-size:.72rem;font-weight:700;line-height:1;
+  cursor:pointer;flex:0 0 auto;padding:0;font-family:var(--font-ja)}
+.qb:hover{border-color:var(--accent);color:var(--accent)}
+.hdrline{display:flex;align-items:center;gap:7px;margin-bottom:7px}
+.hdrline>label{font-size:.74rem;font-weight:700;letter-spacing:.05em;color:var(--fg-dim);margin:0}
+.hdrline .sp{flex:1 1 auto}
+.helpbody{font-size:.86rem;line-height:1.75;text-align:left}
+.helpbody b{color:var(--accent)}
+.helpbody p{margin:0 0 9px}
+.helpbody p:last-child{margin-bottom:0}
 .ctrlrow{display:flex;gap:14px;align-items:flex-end}
 .ctrlrow .spd{flex:2 1 0;min-width:0}
 .ctrlrow .disp{flex:1 1 0;min-width:0;display:flex;gap:8px;position:relative}
@@ -1288,7 +1300,8 @@ function editInfoRow(s){
       <div class="field"><label for="eBpm">BPM</label>
         <input type="text" id="eBpm" value="${s.bpm||100}"
           oninput="if(!editing){const v=parseInt(this.value,10); draft.bpm=isNaN(v)?undefined:Math.max(30,Math.min(260,v));}"></div>
-      <div class="field"><label>原曲キー</label>
+      <div class="field"><label>原曲キー<button class="qb" style="margin-left:6px;vertical-align:-3px"
+          onclick="openHelp('keycapo')" aria-label="キーとカポの説明">?</button></label>
         <button class="pkbig" id="keyBtn" onclick="openEditKeyPick()">${keyBtnLabel(s)}</button></div>
       <div class="field"><label>カポ</label>
         <button class="pkbig" id="capoBtn" onclick="openEditCapoPick()">${capoBtnLabel(s)}</button></div>
@@ -1313,7 +1326,8 @@ function refreshKeyRow(){
 // コードを入れる欄（コード譜のすぐ上に出す）
 function chordBarHtml(){
   return `<div class="card" style="margin-bottom:10px;padding:11px 14px">
-    <label style="display:block;font-size:.74rem;font-weight:700;letter-spacing:.05em;color:var(--fg-dim);margin-bottom:6px">コードを入れる<span style="font-weight:400;letter-spacing:0">　— コード譜のカーソルのところに入ります</span></label>
+    ${headLine('コードを入れる', 'chordbar',
+      '<span style="font-size:.72rem;color:var(--fg-dim)">コード譜のカーソルのところに入ります</span>')}
     <div class="picker cp" id="palette"></div>
   </div>`;
 }
@@ -1322,7 +1336,8 @@ const MEMO_TABS = ['2回し','くりかえし','ここから','ここまで','�
                    'フェードアウト','1番だけ','2番だけ','女性キー','半音下げ'];
 function memoBarHtml(){
   return `<div class="card" style="padding:11px 14px">
-    <label for="memoBox" style="display:block;font-size:.74rem;font-weight:700;letter-spacing:.05em;color:var(--fg-dim);margin-bottom:6px">メモを入れる<span style="font-weight:400;letter-spacing:0">　— 括弧で囲んで差し込むので、コードとして読まれません</span></label>
+    ${headLine('メモを入れる', 'memobar',
+      '<span style="font-size:.72rem;color:var(--fg-dim)">括弧で囲むので、コードとして読まれません</span>')}
     <div class="picker cp">
       ${MEMO_TABS.map(m=>`<button class="pk sub" onclick="insertMemo('${m}')">${m}</button>`).join('')}
       <span class="tabdiv"></span>
@@ -1333,6 +1348,88 @@ function memoBarHtml(){
       </span>
     </div>
   </div>`;
+}
+
+/* ---- 「?」を押したときに出す説明 ---- */
+const HELP = {
+  audio: ['音源', `
+    <p>この曲に<b>参考の音源を1つ</b>貼っておける欄です。原曲でも、自分の演奏でも構いません。
+      譜面を見ながらその場で聴けるので、キーやテンポ、入り方の確認に使えます。</p>
+    <p><b>ここで録音する</b>…譜面を映したまま、その場で録れます。止めると自動でこの曲に付きます。</p>
+    <p><b>ファイルから選ぶ</b>…すでに手元にある音源（過去のライブ録音など）を貼ります。</p>
+    <p>音源は<b>この端末の中だけ</b>に置かれ、ほかの端末には同期されません。容量が大きいためです。
+      iPad で貼った音源はパソコンには出てきません。外しても譜面は残ります。</p>
+    <p>溜まってきたら、楽曲リストの下の<b>「端末の空き容量を見る」</b>から、
+      曲ごとの一覧を見てまとめて外せます。</p>`],
+  look: ['表示のしかた', `
+    <p><b>スクロール速度</b>…自動スクロールの速さです。曲の BPM と連動しています。</p>
+    <p><b>左ぞろえ／中央ぞろえ</b>…押すたびに切り替わります。中央にしても、
+      コードと歌詞の縦の位置関係は崩れません。</p>
+    <p><b>文字</b>…押すと ＋ / − の縦バーが出て、文字の大きさを調整できます。「自動」で元に戻ります。</p>
+    <p>この2つは<b>その曲に保存</b >され、同時に<b>この端末の既定</b>としても覚えます。
+      まだ個別に決めていない曲は、その既定の大きさ・ぞろえで開きます。</p>`],
+  keycapo: ['キーとカポ', `
+    <p><b>Key</b> は<b>鳴る音</b>のキーです。カポを動かしても変わりません。</p>
+    <p><b>Capo</b> を選ぶと、その位置で<b>押さえるキー</b>が横に小さく出ます。
+      たとえば原曲 F の曲は、3カポにすると D の形で押さえられます。</p>
+    <p>編集画面では「譜面はカポを付けて押さえる形／カポなしの鳴る音」を選べます。
+      前者にしておくと、カポを選び直したときに<b>コード譜の文字も一緒に書き換わります</b>。</p>`],
+  newsong: ['新規登録', `
+    <p><b>ファイルを選ぶ / フォルダを選ぶ</b>….md / .txt / .doc / .docx / .pdf / 画像 / .zip を読み込みます。
+      フォルダ名は<b>ジャンルとして引き継ぎ</b>ます。ZIP は中を開いて、フォルダごと読んだときと同じに並べます。</p>
+    <p>画像や PDF からの読み取りは間違いが混ざります。読み込んだあと、一覧の「直す」で必ず確認してください。</p>
+    <p>読み込んだ曲は、いったん<b>下の一覧に溜まります</b>。「選んだ曲を取り込む」を押して
+      はじめて楽曲リストに入ります。</p>`],
+  paste: ['貼り付けて作る', `
+    <p>コード譜のテキストを「コード譜」の欄に貼り付けると、<b>コード行と歌詞行を自動で振り分け</b>ます。
+      全角英数・♭記号・中黒区切りはそのままで構いません。</p>
+    <p>右の「表示の確認」は、実際に曲画面でどう出るかを<b>同じ文字・同じ桁</b>で見せています。
+      左の ＋ / ♪ を押すと、その行をコード行か歌詞行かに切り替えられます。</p>`],
+  fromsound: ['音から作る', `
+    <p>音源を読み込むと、<b>コード進行・キー・テンポを解析</b>して譜面の下書きを作ります。
+      曲画面の「音源」とは別もので、こちらは<b>譜面を作るため</b>の機能です。</p>
+    <p>マイクは空気中の音を拾うので、自分の演奏でも、スピーカーから流れている曲でも構いません。
+      止めると自動で解析が始まります。</p>
+    <p>解析は目安です。そのまま使わず、必ず譜面を見て直してください。</p>`],
+  chordbar: ['コードを入れる', `
+    <p>押すと、<b>コード譜のカーソルの位置</b>にそのコードが入ります。
+      右の空欄に打ち込めば、一覧にないコードも入れられます。</p>`],
+  memobar: ['メモを入れる', `
+    <p>「2回し」「ここから」のような覚え書きを、<b>括弧で囲んで</b>差し込みます。
+      括弧で囲むので<b>コードとして読まれず</b>、移調やカポを動かしても動きません。</p>`],
+  setlist: ['セットリスト', `
+    <p>本番やリハの並び順をまとめておく場所です。曲は何度でも入れ直せます。</p>
+    <p>行を<b>右になぞると「書き出し」</b>、<b>左になぞると「共有」</b>が出ます。
+      パソコンでは行の右端の「⋯」を押しても同じものが出ます。</p>
+    <p>楽曲リストの行も同じで、<b>右になぞると「セットリストに追加」</b>、
+      <b>左になぞると「削除」</b>です。</p>`],
+  storage: ['端末の空き容量', `
+    <p><b>音源</b>…曲に貼った音源の一覧です。この端末にだけあり、同期されません。
+      「いらない音源だけ外す」は、曲を消したのに音源だけ残っているものを片付けます。</p>
+    <p><b>Google ドライブへのバックアップ</b>…譜面を .md ファイルとして、自分で中身を見られる形で
+      ドライブに置いておきます。曲名やジャンルを変えると、ドライブ側も名前を変えて移します。</p>
+    <p><b>オフラインバックアップ</b>…圏外でも譜面を開けるように、この端末にもコピーを置いています。
+      削除してもクラウドの譜面は消えず、次にネットにつないだときに降りてきます。
+      容量が足りないときや、表示がおかしいときに試してください。</p>`],
+  tidy: ['読み込み済みの曲を整理し直す', `
+    <p>曲名・アーティスト・キー・カポ・テンポの<b>欄だけ</b>を、譜面の中身から付け直します。
+      <b>譜面の文字そのものは触りません</b>。元に戻せないので、心配なら先に書き出してください。</p>
+    <p>「Google ドライブにも全部書き出す」を付けると、全曲を書き出し直し、
+      消した曲のファイルをゴミ箱へ、どの曲にもひも付かないファイルを「_ふるい」へまとめます。</p>`]
+};
+function openHelp(k){
+  const h = HELP[k]; if (!h) return;
+  document.getElementById('popName').textContent = h[0] + ' とは';
+  document.getElementById('popDesc').textContent = '';
+  document.getElementById('popGrid').innerHTML =
+    `<div style="flex:1 1 100%"><div class="helpbody">${h[1]}</div></div>`;
+  document.getElementById('pop').hidden = false;
+}
+// 見出しと「?」をひとまとめに出す
+function headLine(label, key, extra){
+  return `<div class="hdrline"><label>${label}</label>
+    <button class="qb" onclick="openHelp('${key}')" aria-label="${label}の説明">?</button>
+    ${extra || ''}</div>`;
 }
 
 /* ---- 押すと開くタブ（ジャンル・キー・カポ） ---- */
@@ -2018,7 +2115,7 @@ const FB_CONFIG = {
 };
 
 // このファイルの版。差し替えたかどうかの目印になる
-const APP_BUILD = 'V261110-22';
+const APP_BUILD = 'V261110-22b';
 
 let fb = null, fbUser = null, fbUnsub = null, syncState = 'off', pushTimer = null;
 let syncPaused = false;   // まとめ消しの最中だけ true。消しかけの状態が戻ってくるのを防ぐ
@@ -3594,6 +3691,8 @@ function renderInner(){
         <button class="ghost" onclick="editSong('${s.id}')">編集</button>
         <button class="ghost" onclick="exportSong('${s.id}')">書き出し</button>
         <button class="ghost" onclick="shareSong('${s.id}')">共有</button>`}
+        ${isViewer ? '' : `<button class="ghost${audioOpen?' on':''}" id="audioBtn"
+          onclick="toggleAudioCard()" aria-label="音源">♪ 音源${s.hasAudio?'あり':''}</button>`}
       </div>
       ${vers.length > 1 ? `<div class="vrow">
         <span class="vlab">バージョン</span>
@@ -3606,7 +3705,7 @@ function renderInner(){
     bar.className = 'card';
     bar.innerHTML = `<div class="ctrlrow">
       <div class="spd">
-        <label style="font-size:.74rem;font-weight:700;letter-spacing:.05em;color:var(--fg-dim);display:block;margin-bottom:7px">スクロール速度</label>
+        ${headLine('スクロール速度', 'look')}
         <div class="slider"><input type="range" id="bpmRange" min="40" max="200" value="${s.bpm}"
           oninput="setBpm(this.value)"><span class="bpm" id="bpmOut">${s.bpm} BPM</span></div>
       </div>
@@ -3623,12 +3722,13 @@ function renderInner(){
     </div>`;
     view.appendChild(bar);
 
-    if (!isViewer){
+    if (!isViewer && audioOpen){
     const au = document.createElement('div');
     au.className = 'card';
     au.id = 'audioCard';
-    au.innerHTML = `<label style="font-size:.74rem;font-weight:700;letter-spacing:.05em;color:var(--fg-dim);display:block;margin-bottom:8px">音源</label>
-      <div id="audioSlot"><p class="hint" style="margin:0">読み込み中…</p></div>
+    au.innerHTML = headLine('音源', 'audio',
+        `<span class="sp"></span><button class="mini" onclick="toggleAudioCard()">閉じる</button>`) +
+      `<div id="audioSlot"><p class="hint" style="margin:0">読み込み中…</p></div>
       <input type="file" id="attachAudio" accept="audio/*" hidden onchange="if(this.files[0])attachTo('${s.id}', this.files[0])">`;
     view.appendChild(au);
     loadAudioSlot(s);
@@ -3787,7 +3887,8 @@ function renderInner(){
     const pl = openList ? playlists.find(x=>x.id===openList) : null;
 
     if (!pl){
-      hdr.innerHTML = `<div class="hdr-title">セットリスト
+      hdr.innerHTML = `<div class="hdr-title">セットリスト<button class="qb"
+      style="margin-left:8px;vertical-align:2px" onclick="openHelp('setlist')" aria-label="セットリストの説明">?</button>
           <div class="hdr-sub" style="margin-top:2px">${playlists.length} 件${isViewer?' · 閲覧専用':''}</div></div>
         ${isViewer?'':'<button class="act" onclick="newPlaylist()">＋ 新しいセットリスト</button>'}`;
       const d = document.createElement('div');
@@ -3921,7 +4022,8 @@ function renderInner(){
     const d = document.createElement('div');
     d.innerHTML = `
       <div class="card">
-        <h2>新規登録</h2>
+        <h2>新規登録<button class="qb" style="margin-left:8px;vertical-align:2px"
+          onclick="openHelp('newsong')" aria-label="新規登録の説明">?</button></h2>
         <div class="drop" id="dropZone">
           <p>ここにファイルやフォルダをドラッグ<br><span style="font-size:.74rem">.md / .txt / .doc / .docx / .pdf / 画像 / .zip</span></p>
           <div class="btnrow" style="justify-content:center">
@@ -3936,8 +4038,9 @@ function renderInner(){
         <div id="batchOut"></div>
       </div>
       <div class="card">
-        <h2>貼り付けて作る</h2>
-        <p class="sub">コード譜のテキストを下の「コード譜」に貼り付けると、コード行と歌詞行を自動で振り分けます。全角英数・♭記号・中黒区切りはそのままで構いません。</p>
+        <h2>貼り付けて作る<button class="qb" style="margin-left:8px;vertical-align:2px"
+          onclick="openHelp('paste')" aria-label="貼り付けて作るの説明">?</button></h2>
+        <p class="sub">コード譜のテキストを下の「コード譜」に貼り付けると、コード行と歌詞行を自動で振り分けます。</p>
         <div class="erow">
           <div class="field"><label for="draftTitle">曲名</label>
             <input type="text" id="draftTitle" value="${esc(draft.title)}" oninput="draft.title=this.value"></div>
@@ -3963,8 +4066,9 @@ function renderInner(){
         <button class="act" onclick="saveDraft()">保存する</button>
       </div>
       <div class="card">
-        <h2>音から作る</h2>
-        <p class="sub">音源ファイルを読み込むと、コード進行・キー・テンポを解析します。自分の演奏でも、録音した曲でも構いません。</p>
+        <h2>音から作る<button class="qb" style="margin-left:8px;vertical-align:2px"
+          onclick="openHelp('fromsound')" aria-label="音から作るの説明">?</button></h2>
+        <p class="sub">音源ファイルを読み込むと、コード進行・キー・テンポを解析します。曲画面の「音源」とは別もので、こちらは譜面を作るための機能です。</p>
         <div class="drop" id="audioZone">
           <p>音源ファイルをここにドラッグ（mp3 / m4a / wav）</p>
           <div class="btnrow" style="justify-content:center">
@@ -4739,7 +4843,8 @@ function openTidy(){
   const plan = tidyPlan();
   const drive = (driveState === 'on');
   const doDrive = drive && tidyDrive;
-  document.getElementById('popName').textContent = '読み込み済みの曲を整理し直す';
+  document.getElementById('popName').innerHTML = '読み込み済みの曲を整理し直す'
+    + '<button class="qb" style="margin-left:8px;vertical-align:2px" onclick="openHelp(\'tidy\')" aria-label="説明">?</button>';
   document.getElementById('popDesc').textContent =
     plan.length ? `${plan.length} 曲に直すところがあります。` : '曲の欄に直すところはありません。';
   document.getElementById('popGrid').innerHTML = `<div style="flex:1 1 100%">
@@ -5726,7 +5831,8 @@ async function drawStorage(){
     <p class="hint" style="margin-top:6px">音源はこの端末にだけ置いてあり、ほかの端末には同期されません。
       外しても譜面は残ります。元の音源ファイルが手元にあれば、曲画面から付け直せます。</p>
 
-    <div class="secthead" style="margin-top:22px">Google ドライブへのバックアップ</div>
+    <div class="secthead" style="margin-top:22px">Google ドライブへのバックアップ<button class="qb"
+      style="margin-left:7px;vertical-align:-3px" onclick="openHelp('storage')" aria-label="説明">?</button></div>
     <div id="driveBox"></div>
 
     <div class="secthead" style="margin-top:22px">オフラインバックアップ</div>
@@ -5991,6 +6097,17 @@ async function loadAudioSlot(song){
     </div>
     <p class="hint" id="songRecMsg" style="margin-top:7px"></p>`;
 }
+// 音源の欄を開けておくかどうか。閉じるを押すまで開いたまま（曲を移っても続く）
+let audioOpen = false;
+function toggleAudioCard(){
+  audioOpen = !audioOpen;
+  render();
+  if (audioOpen){
+    const el = document.getElementById('audioCard');
+    if (el) el.scrollIntoView({behavior:'smooth', block:'nearest'});
+  }
+}
+
 /* ---- 曲画面での録音 ---- */
 let songRec = null, songRecChunks = [], songRecTimer = null, songRecStart = 0;
 
