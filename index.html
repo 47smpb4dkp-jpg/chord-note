@@ -2213,7 +2213,7 @@ const FB_CONFIG = {
 };
 
 // このファイルの版。差し替えたかどうかの目印になる
-const APP_BUILD = 'V261113-14c';
+const APP_BUILD = 'V261113-17';
 
 let fb = null, fbUser = null, fbUnsub = null, syncState = 'off', pushTimer = null;
 let syncPaused = false;   // まとめ消しの最中だけ true。消しかけの状態が戻ってくるのを防ぐ
@@ -3152,6 +3152,15 @@ function startMetaSync(){
 // 以前に保存した曲は、曲名やクレジットの行が本文に残っている。一度だけ取り除く
 function migrateSongs(){
   let changed = false;
+  // スクロール速度の決め方を変えたので、曲ごとの指定を一度だけ外して
+  // 全曲いったん既定の 50%（4秒に1行）にそろえる。
+  // 曲ごとに印（sv）を付けるので、そのあと自分で決め直した値は残る
+  songs.forEach(x=>{
+    if (!x || x.sv >= 1) return;
+    if (x.scrollPct != null) delete x.scrollPct;
+    x.sv = 1;
+    changed = true;
+  });
   // vgroup が無い曲は「自分ひとりのまとまり」として扱う（groupKey が id で代用するので書き込みはしない）
   songs.forEach(x=>{
     if (x.v >= 2 || !x.text) return;
@@ -4373,6 +4382,13 @@ function toggleScroll(){ scrolling ? stopScroll() : startScroll(); }
 // 100% で「2秒に1行」。50% なら「4秒に1行」。文字を大きくしても同じ見え方になる
 const SCROLL_FULL_SEC = 2;
 const SCROLL_PCT_DEF = 50;
+// 速さの決め方を変えたので、端末に覚えている数字も一度だけ既定に戻す
+try{
+  if (localStorage.getItem('cn_spdreset') !== '1'){
+    localStorage.setItem('scrollPct', String(SCROLL_PCT_DEF));
+    localStorage.setItem('cn_spdreset', '1');
+  }
+}catch(e){}
 function scrollPctOf(s){
   const n = s && parseInt(s.scrollPct, 10);
   if (n && n >= 1) return Math.min(100, n);
