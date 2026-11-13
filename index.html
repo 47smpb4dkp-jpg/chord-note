@@ -452,7 +452,35 @@ textarea{min-height:190px;resize:vertical;white-space:pre;overflow-wrap:normal;o
 .stat{display:flex;gap:16px;flex-wrap:wrap;font-size:.78rem;color:var(--fg-dim);margin-top:10px}
 .stat b{color:var(--accent);font-family:var(--font-mono);font-variant-numeric:tabular-nums}
 .slider{display:flex;align-items:center;gap:10px}
-/* 速度バーが3分の2、のこり3分の1に「ぞろえ」と「文字サイズ」 */
+
+/* 曲のメニュー */
+.msec{font-size:.72rem;letter-spacing:.09em;color:var(--fg-dim);font-weight:700;margin:0 0 7px}
+.mlist{display:flex;flex-direction:column;gap:6px}
+.mrow{display:flex;align-items:center;gap:10px;width:100%;text-align:left;
+  background:var(--surface);border:1px solid var(--line);border-radius:9px;
+  padding:9px 12px;font:inherit;font-family:var(--font-ja);color:var(--fg);cursor:pointer}
+.mrow:hover{border-color:var(--accent)}
+.mrow.static{cursor:default}
+.mrow.static:hover{border-color:var(--line)}
+.mrow .mn{flex:1 1 auto;min-width:0;font-size:.9rem;line-height:1.3}
+.mrow .mn i{font-style:normal;display:block;font-size:.7rem;color:var(--fg-dim);margin-top:2px}
+.mrow .mctl{display:flex;gap:5px;flex:0 0 auto;align-items:center}
+.mrow .mbig{width:32px;height:30px;border:1px solid var(--line);background:var(--surface-2);
+  border-radius:7px;font-size:1rem;line-height:1;color:var(--fg);cursor:pointer;padding:0}
+.mrow .mbig:hover{border-color:var(--accent)}
+
+/* 画面を消さない設定のスイッチ */
+.swbtn{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line);
+  background:var(--surface);border-radius:999px;padding:4px 11px 4px 5px;cursor:pointer;
+  font:inherit;font-family:var(--font-ja);font-size:.74rem;color:var(--fg-dim);white-space:nowrap}
+.swbtn .kn{width:30px;height:17px;border-radius:999px;background:var(--line);
+  position:relative;flex:0 0 auto;transition:background .15s}
+.swbtn .kn::after{content:'';position:absolute;top:2px;left:2px;width:13px;height:13px;
+  border-radius:50%;background:#fff;transition:transform .15s;box-shadow:0 1px 2px rgba(0,0,0,.25)}
+.swbtn.on{color:var(--accent);border-color:var(--accent)}
+.swbtn.on .kn{background:var(--accent)}
+.swbtn.on .kn::after{transform:translateX(13px)}
+
 /* 見出しの横に出す「?」。押すと説明が出る */
 .qb{border:1px solid var(--line);background:var(--surface);color:var(--fg-dim);
   width:19px;height:19px;border-radius:50%;font-size:.72rem;font-weight:700;line-height:1;
@@ -465,30 +493,7 @@ textarea{min-height:190px;resize:vertical;white-space:pre;overflow-wrap:normal;o
 .helpbody b{color:var(--accent)}
 .helpbody p{margin:0 0 9px}
 .helpbody p:last-child{margin-bottom:0}
-.ctrlrow{display:flex;gap:14px;align-items:flex-end}
-.ctrlrow .spd{flex:2 1 0;min-width:0}
-.ctrlrow .disp{flex:1 1 0;min-width:0;display:flex;gap:8px;position:relative}
-.ctrlrow .disp .dbtn{flex:1 1 0;min-width:0;background:var(--surface);border:1px solid var(--line);
-  border-radius:9px;padding:7px 6px;font:inherit;font-family:var(--font-ja);font-size:.78rem;
-  color:var(--fg);cursor:pointer;line-height:1.25;white-space:nowrap;
-  overflow:hidden;text-overflow:ellipsis}
-.ctrlrow .disp .dbtn:hover{border-color:var(--accent)}
-.ctrlrow .disp .dbtn i{font-style:normal;display:block;font-size:.64rem;color:var(--fg-dim)}
-/* 文字サイズの上下バー */
-#sizePad{position:absolute;right:0;top:calc(100% + 7px);z-index:40;
-  background:var(--surface);border:1px solid var(--line);border-radius:11px;
-  box-shadow:0 8px 22px rgba(0,0,0,.18);padding:8px;display:flex;flex-direction:column;
-  align-items:center;gap:5px;min-width:74px}
-#sizePad button{width:100%;border:1px solid var(--line);background:var(--surface-2);
-  border-radius:8px;font:inherit;color:var(--fg);cursor:pointer;padding:5px 0;line-height:1}
-#sizePad .big{font-size:1.2rem;font-weight:700;padding:3px 0}
-#sizePad .szval{font-family:var(--font-mono);font-weight:700;font-size:.9rem;color:var(--accent)}
-#sizePad .auto{font-size:.68rem;font-family:var(--font-ja);padding:4px 0}
-@media (max-width:560px){
-  .ctrlrow{flex-wrap:wrap}
-  .ctrlrow .spd{flex:1 1 100%}
-  .ctrlrow .disp{flex:1 1 100%}
-}
+
 input[type=range]{flex:1 1 auto;accent-color:var(--accent);min-width:0}
 .bpm{font-family:var(--font-mono);font-weight:700;color:var(--accent);font-variant-numeric:tabular-nums;
   min-width:68px;text-align:right;font-size:.84rem}
@@ -1350,6 +1355,44 @@ function memoBarHtml(){
   </div>`;
 }
 
+/* ---- 画面を自動で消さないようにする（譜面を見ている間） ---- */
+let _wake = null;
+function keepAwakeOn(){ return devGet('keepAwake') === '1'; }
+function canKeepAwake(){ return 'wakeLock' in navigator; }
+async function applyWakeLock(){
+  const want = keepAwakeOn() && document.visibilityState === 'visible';
+  try{
+    if (want && !_wake && canKeepAwake()){
+      _wake = await navigator.wakeLock.request('screen');
+      _wake.addEventListener('release', ()=>{ _wake = null; });
+    } else if (!want && _wake){
+      await _wake.release();
+      _wake = null;
+    }
+  }catch(e){ _wake = null; }
+}
+function toggleKeepAwake(){
+  if (!canKeepAwake()){
+    alertShare('この端末では画面を点けたままにできません');
+    return;
+  }
+  devSet('keepAwake', keepAwakeOn() ? null : '1');
+  applyWakeLock();
+  render();
+  alertShare(keepAwakeOn() ? '画面を消さないようにしました' : '画面は自動で消えます');
+}
+// 画面を一度離れると解除されるので、戻ってきたら取り直す
+document.addEventListener('visibilitychange', applyWakeLock);
+window.addEventListener('focus', applyWakeLock);
+// スイッチの見た目
+function awakeSwitch(){
+  if (!canKeepAwake()) return '';
+  const on = keepAwakeOn();
+  return `<button class="swbtn${on?' on':''}" onclick="toggleKeepAwake()"
+    aria-label="画面を消さない" title="${on?'画面を点けたままにします':'画面は自動で消えます'}">
+    <span class="kn"></span>${on ? '画面を消さない' : '自動で消す'}</button>`;
+}
+
 /* ---- 「?」を押したときに出す説明 ---- */
 const HELP = {
   audio: ['音源', `
@@ -1403,6 +1446,12 @@ const HELP = {
       パソコンでは行の右端の「⋯」を押しても同じものが出ます。</p>
     <p>楽曲リストの行も同じで、<b>右になぞると「セットリストに追加」</b>、
       <b>左になぞると「削除」</b>です。</p>`],
+  awake: ['画面を消さない', `
+    <p>入れておくと、このアプリを開いている間は<b>画面が自動で暗くならず、消えません</b>。
+      演奏中に譜面が消えてしまうのを防げます。</p>
+    <p>アプリを閉じたり、ほかのアプリに移ったりすれば、<b>ふだんどおり自動で消えます</b>。
+      電池のもちが気になるときは切ってください。</p>
+    <p>この設定は<b>この端末だけ</b>のものです。iPad で入れてもパソコン側は変わりません。</p>`],
   storage: ['端末の空き容量', `
     <p><b>音源</b>…曲に貼った音源の一覧です。この端末にだけあり、同期されません。
       「いらない音源だけ外す」は、曲を消したのに音源だけ残っているものを片付けます。</p>
@@ -2115,7 +2164,7 @@ const FB_CONFIG = {
 };
 
 // このファイルの版。差し替えたかどうかの目印になる
-const APP_BUILD = 'V261110-22b';
+const APP_BUILD = 'V261113-12';
 
 let fb = null, fbUser = null, fbUnsub = null, syncState = 'off', pushTimer = null;
 let syncPaused = false;   // まとめ消しの最中だけ true。消しかけの状態が戻ってくるのを防ぐ
@@ -3121,12 +3170,6 @@ function applySheetLook(){
   sheet.classList.toggle('ctr', sheetAlignOf(s) === 'center');
   const size = sheetSizeOf(s);
   sheet.style.setProperty('--sheet-size', size + 'px');
-  const ab = document.getElementById('alignBtn');
-  if (ab) ab.innerHTML = (sheetAlignOf(s) === 'center' ? '中央ぞろえ' : '左ぞろえ') + '<i>押すと切り替え</i>';
-  const sb = document.getElementById('sizeBtn');
-  if (sb) sb.innerHTML = '文字 ' + (sheetSizeIsAuto(s) ? 'ふつう' : size) + '<i>押すと調整</i>';
-  const sv = document.getElementById('szVal');
-  if (sv) sv.textContent = size + 'px';
 }
 function toggleAlign(){
   const s = songs.find(x=>x.id===openSong); if (!s) return;
@@ -3136,21 +3179,6 @@ function toggleAlign(){
   applySheetLook();
   persist();
 }
-function openSizePad(){
-  const pad = document.getElementById('sizePad');
-  if (!pad) return;
-  pad.hidden = !pad.hidden;
-  if (!pad.hidden) applySheetLook();
-}
-// ほかのところを押したら、上下バーは引っこめる
-document.addEventListener('click', e=>{
-  const pad = document.getElementById('sizePad');
-  if (!pad || pad.hidden) return;
-  if (pad.contains(e.target)) return;
-  const sb = document.getElementById('sizeBtn');
-  if (sb && sb.contains(e.target)) return;
-  pad.hidden = true;
-}, true);
 function bumpSize(d){
   const s = songs.find(x=>x.id===openSong); if (!s) return;
   const now = sheetSizeOf(s);
@@ -3685,14 +3713,10 @@ function renderInner(){
           Key <b>${esc(soundKey||'—')}</b></button>
         <button class="chipbtn tap" onclick="openCapo()" aria-label="カポを選ぶ">
           Capo <b>${s.capo||0}</b>${playKey && (s.capo||0) ? `<i>${esc(playKey)}</i>` : ''}</button>
-        <span class="chipbtn">${s.bpm} BPM</span>
+        <button class="chipbtn tap${speedOpen?' on':''}" onclick="toggleSpeedCard()"
+          aria-label="スクロール速度を変える"><b>${s.bpm}</b> BPM</button>
         <button class="act" id="scrollBtn" onclick="toggleScroll()">${scrolling?'停止':'自動スクロール'}</button>
-        ${isViewer ? '' : `<button class="ghost" onclick="choosePlaylist(['${s.id}'])">リストに追加</button>
-        <button class="ghost" onclick="editSong('${s.id}')">編集</button>
-        <button class="ghost" onclick="exportSong('${s.id}')">書き出し</button>
-        <button class="ghost" onclick="shareSong('${s.id}')">共有</button>`}
-        ${isViewer ? '' : `<button class="ghost${audioOpen?' on':''}" id="audioBtn"
-          onclick="toggleAudioCard()" aria-label="音源">♪ 音源${s.hasAudio?'あり':''}</button>`}
+        <button class="ghost" onclick="openSongMenu()" aria-label="この曲のメニュー">⋯ メニュー</button>
       </div>
       ${vers.length > 1 ? `<div class="vrow">
         <span class="vlab">バージョン</span>
@@ -3701,26 +3725,16 @@ function renderInner(){
           v.key ? `<i>${esc(v.key)}${v.capo?' / Capo'+v.capo:''}</i>` : ''}</button>`).join('')}
       </div>` : ''}`;
     if (navPos){ const nv = document.getElementById('songNav'); if (nv) bindSwipe(nv); }
-    const bar = document.createElement('div');
-    bar.className = 'card';
-    bar.innerHTML = `<div class="ctrlrow">
-      <div class="spd">
-        ${headLine('スクロール速度', 'look')}
-        <div class="slider"><input type="range" id="bpmRange" min="40" max="200" value="${s.bpm}"
-          oninput="setBpm(this.value)"><span class="bpm" id="bpmOut">${s.bpm} BPM</span></div>
-      </div>
-      <div class="disp">
-        <button class="dbtn" id="alignBtn" onclick="toggleAlign()"></button>
-        <button class="dbtn" id="sizeBtn" onclick="openSizePad()"></button>
-        <div id="sizePad" hidden>
-          <button class="big" onclick="bumpSize(1)" aria-label="大きく">＋</button>
-          <span class="szval" id="szVal"></span>
-          <button class="big" onclick="bumpSize(-1)" aria-label="小さく">−</button>
-          <button class="auto" onclick="autoSize()">自動</button>
-        </div>
-      </div>
-    </div>`;
-    view.appendChild(bar);
+    if (speedOpen){
+      const bar = document.createElement('div');
+      bar.className = 'card';
+      bar.id = 'speedCard';
+      bar.innerHTML = headLine('スクロール速度', 'look',
+          `<span class="sp"></span><button class="mini" onclick="toggleSpeedCard()">閉じる</button>`) +
+        `<div class="slider"><input type="range" id="bpmRange" min="40" max="200" value="${s.bpm}"
+          oninput="setBpm(this.value)"><span class="bpm" id="bpmOut">${s.bpm} BPM</span></div>`;
+      view.appendChild(bar);
+    }
 
     if (!isViewer && audioOpen){
     const au = document.createElement('div');
@@ -3756,6 +3770,7 @@ function renderInner(){
          <button class="ghost" onclick="toggleSelectMode()">やめる</button>`
       : `<div class="hdr-title">楽曲リスト<div class="hdr-sub" style="margin-top:2px">${reps.length} songs${
             songs.length !== reps.length ? ` · ${songs.length} バージョン` : ''}</div></div>
+         ${awakeSwitch()}
          <button class="ghost" onclick="toggleSelectMode()">選択</button>
          <button class="act" onclick="go('new')">＋ 新規</button>`;
     const keyOf = x => groupMode==='artist' ? (x.artist||'不明') : (x.folder||'未分類');
@@ -6097,6 +6112,60 @@ async function loadAudioSlot(song){
     </div>
     <p class="hint" id="songRecMsg" style="margin-top:7px"></p>`;
 }
+// スクロール速度の欄。BPM を押すと出て、閉じるまで出たまま
+let speedOpen = false;
+function toggleSpeedCard(){
+  speedOpen = !speedOpen;
+  render();
+  if (speedOpen){
+    const el = document.getElementById('speedCard');
+    if (el) el.scrollIntoView({behavior:'smooth', block:'nearest'});
+  }
+}
+
+/* ---- この曲のメニュー（設定ごと一覧にまとめる） ---- */
+function openSongMenu(){
+  const s = songs.find(x=>x.id===openSong); if (!s) return;
+  const sz = sheetSizeOf(s);
+  const ctr = sheetAlignOf(s) === 'center';
+  const row = (act, name, note, cls) =>
+    `<button class="mrow${cls?' '+cls:''}" onclick="${act}">
+       <span class="mn">${name}<i>${note}</i></span></button>`;
+  document.getElementById('popName').textContent = 'この曲のメニュー';
+  document.getElementById('popDesc').textContent = s.title || '';
+  document.getElementById('popGrid').innerHTML = `<div style="flex:1 1 100%">
+    <div class="msec">表示<button class="qb" style="margin-left:7px;vertical-align:-3px"
+      onclick="openHelp('look')" aria-label="説明">?</button></div>
+    <div class="mlist">
+      ${row('menuAlign()', ctr ? '中央ぞろえ' : '左ぞろえ', '押すと切り替わります')}
+      <div class="mrow static">
+        <span class="mn">文字の大きさ<i>${sheetSizeIsAuto(s) ? 'ふつう' : sz + 'px'}</i></span>
+        <span class="mctl">
+          <button class="mbig" onclick="menuSize(-1)" aria-label="小さく">−</button>
+          <button class="mbig" onclick="menuSize(1)" aria-label="大きく">＋</button>
+          <button class="mini" onclick="menuSize(0)">自動</button></span>
+      </div>
+      ${row('closePop();toggleSpeedCard()', 'スクロール速度', (speedOpen?'いま出ています':'バーを出す') + ' · ' + s.bpm + ' BPM')}
+    </div>
+    ${isViewer ? '' : `
+    <div class="msec" style="margin-top:14px">この曲<button class="qb" style="margin-left:7px;vertical-align:-3px"
+      onclick="openHelp('audio')" aria-label="説明">?</button></div>
+    <div class="mlist">
+      ${row("closePop();toggleAudioCard()", '♪ 音源', s.hasAudio ? '付いています。開いて聴く・録り直す' : '録音する・ファイルから貼る')}
+      ${row("closePop();editSong('"+s.id+"')", '編集', '譜面・キー・カポ・ジャンルを直す')}
+      ${row("closePop();choosePlaylist(['"+s.id+"'])", 'セットリストに追加', 'どのリストに入れるか選ぶ')}
+      ${row("closePop();exportSong('"+s.id+"')", '書き出し', '.md ファイルとして取り出す')}
+      ${row("closePop();shareSong('"+s.id+"')", '共有', '見るだけのリンクを作る')}
+    </div>`}
+  </div>`;
+  document.getElementById('pop').hidden = false;
+}
+function menuAlign(){ toggleAlign(); openSongMenu(); }
+function menuSize(d){
+  if (d === 0) autoSize(); else bumpSize(d);
+  openSongMenu();
+}
+
 // 音源の欄を開けておくかどうか。閉じるを押すまで開いたまま（曲を移っても続く）
 let audioOpen = false;
 function toggleAudioCard(){
