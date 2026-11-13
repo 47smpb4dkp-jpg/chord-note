@@ -474,7 +474,14 @@ textarea{min-height:190px;resize:vertical;white-space:pre;overflow-wrap:normal;o
 
 /* 曲のメニュー */
 .spdrow{display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap}
-.spdrow .sl{font-size:.74rem;color:var(--fg-dim);font-weight:700;flex:0 0 58px}
+.spdrow .sl{font-size:.74rem;color:var(--fg-dim);font-weight:700;flex:0 0 46px}
+.sgrp{margin-top:12px}
+.sgrp:first-of-type{margin-top:6px}
+.sgh{font-size:.8rem;font-weight:700;color:var(--fg);margin-bottom:7px}
+.sgh span{display:block;font-size:.7rem;font-weight:400;color:var(--fg-dim);margin-top:1px}
+.nudge{width:28px;height:26px;flex:0 0 auto;border:1px solid var(--line);background:var(--surface-2);
+  border-radius:7px;font-size:.95rem;line-height:1;color:var(--fg);cursor:pointer;padding:0}
+.nudge:hover{border-color:var(--accent)}
 .msec{font-size:.72rem;letter-spacing:.09em;color:var(--fg-dim);font-weight:700;margin:0 0 7px}
 .mlist{display:flex;flex-direction:column;gap:6px}
 .mrow{display:flex;align-items:center;gap:10px;width:100%;text-align:left;
@@ -1428,14 +1435,16 @@ const HELP = {
     <p>溜まってきたら、楽曲リストの下の<b>「端末の空き容量を見る」</b>から、
       曲ごとの一覧を見てまとめて外せます。</p>`],
   speed: ['速さとメトロノーム', `
-    <p><b>BPM</b> は 1分間の拍数です。メトロノームはこの数字どおりに鳴ります。</p>
-    <p><b>1行の長さ</b> は、譜面を1行送るのに何拍かけるかです。
-      8拍なら、4拍子で2小節ぶん進むあいだに1行ぶん下がります。</p>
-    <p>自動スクロールの速さは、この2つから決まります
-      （1行の高さ ÷ 1行にかける秒数）。<b>メトロノームと同じ時計で動くので、
-      鳴っているクリックに合わせて譜面が進みます</b>。</p>
-    <p>合わないときは、まずメトロノームを鳴らして BPM を曲に合わせ、
-      そのあと「1行の長さ」で流れ方を調整してください。</p>`],
+    <p>このアプリの譜面は歌詞カードなので、1行が何小節ぶんかは行ごとにまちまちです。
+      そのため<b>スクロールの速さと BPM は切り離してあります</b>。</p>
+    <p><b>自動スクロール</b>…0〜100% で自分で決めます。100% で1秒に1行、25% なら4秒に1行です。
+      文字の大きさを変えても見え方は同じになります。
+      流しながら ＋ − を押せば、走ったまま微調整できます。</p>
+    <p><b>メトロノーム</b>…BPM どおりにクリックが鳴ります。拍子の1拍目だけ高い音です。
+      スクロールの速さには影響しません。</p>
+    <p>使い方としては、<b>メトロノームで曲のテンポを決め、
+      スクロールは譜面の流れを見ながら % で合わせる</b>のが早いです。
+      どちらもこの曲に保存され、% はこの端末の既定としても覚えます。</p>`],
   look: ['表示のしかた', `
     <p><b>スクロール速度</b>…自動スクロールの速さです。曲の BPM と連動しています。</p>
     <p><b>左ぞろえ／中央ぞろえ</b>…押すたびに切り替わります。中央にしても、
@@ -2204,7 +2213,7 @@ const FB_CONFIG = {
 };
 
 // このファイルの版。差し替えたかどうかの目印になる
-const APP_BUILD = 'V261113-14';
+const APP_BUILD = 'V261113-14b';
 
 let fb = null, fbUser = null, fbUnsub = null, syncState = 'off', pushTimer = null;
 let syncPaused = false;   // まとめ消しの最中だけ true。消しかけの状態が戻ってくるのを防ぐ
@@ -3781,7 +3790,7 @@ function renderInner(){
         <button class="chipbtn tap" onclick="openCapo()" aria-label="カポを選ぶ">
           Capo <b>${s.capo||0}</b>${playKey && (s.capo||0) ? `<i>${esc(playKey)}</i>` : ''}</button>
         <button class="chipbtn tap${speedOpen?' on':''}" id="bpmChip" onclick="toggleSpeedCard()"
-          aria-label="速さを変える"><b>${s.bpm}</b> BPM</button>
+          aria-label="速さを変える"><b>${scrollPctOf(s)}</b>% / <b>${s.bpm}</b> BPM</button>
         <button class="act" id="scrollBtn" onclick="toggleScroll()">${scrolling?'停止':'自動スクロール'}</button>
         <button class="ghost${metroOn?' on':''}" id="metroBtn" onclick="toggleMetro()">♩ ${metroOn?'停止':'メトロノーム'}</button>
         <button class="ghost" onclick="openSongMenu()" aria-label="この曲のメニュー">⋯ メニュー</button>
@@ -3797,22 +3806,33 @@ function renderInner(){
       const bar = document.createElement('div');
       bar.className = 'card';
       bar.id = 'speedCard';
-      const bpl = beatsPerLineOf(s), top = s.beat || 4;
+      const top = s.beat || 4, pct = scrollPctOf(s);
       bar.innerHTML = headLine('速さ', 'speed',
           `<span class="sp"></span><button class="mini" onclick="toggleSpeedCard()">閉じる</button>`) +
-        `<div class="slider"><input type="range" id="bpmRange" min="30" max="260" value="${s.bpm}"
-          oninput="setBpm(this.value)"><span class="bpm" id="bpmOut">${s.bpm} BPM</span></div>
-        <div class="spdrow">
-          <span class="sl">1行の長さ</span>
-          <span class="picker cp">${[2,4,6,8,12,16].map(n=>
-            `<button class="pk${n===bpl?' on':''}" onclick="setBeatsPerLine(${n})">${n}拍</button>`).join('')}</span>
+        `<div class="sgrp">
+          <div class="sgh">自動スクロール<span>譜面が下がる速さ。BPM とは別に決めます</span></div>
+          <div class="slider">
+            <button class="nudge" onclick="bumpScrollPct(-1)" aria-label="遅く">−</button>
+            <input type="range" id="spdRange" min="1" max="100" value="${pct}" oninput="setScrollPct(this.value)">
+            <button class="nudge" onclick="bumpScrollPct(1)" aria-label="速く">＋</button>
+            <span class="bpm" id="spdOut">${pct} %</span>
+          </div>
+          <p class="hint" id="speedNote" style="margin-top:7px"></p>
         </div>
-        <div class="spdrow">
-          <span class="sl">拍子</span>
-          <span class="picker cp">${[2,3,4,6].map(n=>
-            `<button class="pk${n===top?' on':''}" onclick="setBeatTop(${n})">${n}拍子</button>`).join('')}</span>
-        </div>
-        <p class="hint" id="speedNote" style="margin-top:9px"></p>`;
+        <div class="sgrp">
+          <div class="sgh">メトロノーム<span>クリックの速さ。スクロールには影響しません</span></div>
+          <div class="slider">
+            <button class="nudge" onclick="bumpBpm(-1)" aria-label="遅く">−</button>
+            <input type="range" id="bpmRange" min="30" max="260" value="${s.bpm}" oninput="setBpm(this.value)">
+            <button class="nudge" onclick="bumpBpm(1)" aria-label="速く">＋</button>
+            <span class="bpm" id="bpmOut">${s.bpm} BPM</span>
+          </div>
+          <div class="spdrow">
+            <span class="sl">拍子</span>
+            <span class="picker cp">${[2,3,4,6].map(n=>
+              `<button class="pk${n===top?' on':''}" onclick="setBeatTop(${n})">${n}拍子</button>`).join('')}</span>
+          </div>
+        </div>`;
       view.appendChild(bar);
       drawSpeedNote();
     }
@@ -4299,18 +4319,40 @@ function setBpm(v){
   s.bpm = Math.max(30, Math.min(260, +v || 100));
   const o = document.getElementById('bpmOut');
   if (o) o.textContent = s.bpm + ' BPM';
-  const c = document.getElementById('bpmChip');
-  if (c) c.innerHTML = '<b>' + s.bpm + '</b> BPM';
-  drawSpeedNote();
-  if (scrolling){ stopScroll(); startScroll(); }   // 速さを付け直す
+  drawSpeedChip();
   persist();
 }
-function setBeatsPerLine(n){
+// 上の帯の「25% / 120 BPM」を書き直す
+function drawSpeedChip(){
+  const s = songs.find(x=>x.id===openSong); if (!s) return;
+  const c = document.getElementById('bpmChip');
+  if (c) c.innerHTML = '<b>' + scrollPctOf(s) + '</b>% / <b>' + s.bpm + '</b> BPM';
+}
+function bumpBpm(d){
   const s=songs.find(x=>x.id===openSong); if(!s) return;
-  s.beatsPerLine = n;
-  render();
+  const n = Math.max(30, Math.min(260, (s.bpm||100) + d));
+  const r = document.getElementById('bpmRange');
+  if (r) r.value = n;
+  setBpm(n);
+}
+function setScrollPct(v){
+  const s=songs.find(x=>x.id===openSong); if(!s) return;
+  const n = Math.max(1, Math.min(100, parseInt(v,10) || SCROLL_PCT_DEF));
+  s.scrollPct = n;
+  devSet('scrollPct', n);
+  const o = document.getElementById('spdOut');
+  if (o) o.textContent = n + ' %';
+  drawSpeedChip();
+  drawSpeedNote();
   if (scrolling){ stopScroll(); startScroll(); }
   persist();
+}
+function bumpScrollPct(d){
+  const s=songs.find(x=>x.id===openSong); if(!s) return;
+  const n = Math.max(1, Math.min(100, scrollPctOf(s) + d));
+  const r = document.getElementById('spdRange');
+  if (r) r.value = n;
+  setScrollPct(n);
 }
 function setBeatTop(n){
   const s=songs.find(x=>x.id===openSong); if(!s) return;
@@ -4323,18 +4365,20 @@ function drawSpeedNote(){
   const s=songs.find(x=>x.id===openSong); if(!s) return;
   const el = document.getElementById('speedNote');
   if (!el) return;
-  const sec = beatsPerLineOf(s) * 60 / (s.bpm || 100);
-  const top = s.beat || 4;
-  el.innerHTML = `1行を <b>${beatsPerLineOf(s)}</b> 拍で送ります` +
-    `（${top}拍子で <b>${(beatsPerLineOf(s)/top).toFixed(beatsPerLineOf(s)%top?1:0)}</b> 小節、` +
-    `およそ <b>${sec.toFixed(1)}</b> 秒に1行）。`;
+  const sec = secPerLineOf(s);
+  el.innerHTML = `およそ <b>${sec < 10 ? sec.toFixed(1) : Math.round(sec)}</b> 秒で1行ぶん下がります。`;
 }
 function toggleScroll(){ scrolling ? stopScroll() : startScroll(); }
-// 1行を何拍で送るか。8拍＝4拍子で2小節ぶん
-function beatsPerLineOf(s){
-  const n = s && parseInt(s.beatsPerLine, 10);
-  return (n && n >= 1) ? n : 8;
+// 自動スクロールの速さ（%）。BPM とは別もの。
+// 100% で「1秒に1行」。25% なら「4秒に1行」。文字を大きくしても同じ見え方になる
+const SCROLL_PCT_DEF = 25;
+function scrollPctOf(s){
+  const n = s && parseInt(s.scrollPct, 10);
+  if (n && n >= 1) return Math.min(100, n);
+  const d = parseInt(devGet('scrollPct'), 10);
+  return (d && d >= 1) ? Math.min(100, d) : SCROLL_PCT_DEF;
 }
+function secPerLineOf(s){ return 100 / scrollPctOf(s); }
 // 譜面1行ぶんの高さ。実際に出ている行から測る
 function sheetRowH(){
   const sheet = document.getElementById('sheet');
@@ -4347,11 +4391,8 @@ function sheetRowH(){
 }
 // いまの設定だと1秒に何ピクセル送るか
 function scrollPxPerSec(s){
-  const bpm = s.bpm || 100;
-  const rowH = sheetRowH();
-  if (!rowH) return (bpm/60) * 9;
-  const secPerLine = beatsPerLineOf(s) * 60 / bpm;
-  return rowH / secPerLine;
+  const rowH = sheetRowH() || 46;
+  return rowH * scrollPctOf(s) / 100;
 }
 function startScroll(){
   const s=songs.find(x=>x.id===openSong); if(!s) return;
@@ -6483,7 +6524,7 @@ function openSongMenu(){
           <button class="mini" onclick="menuSize(0)">自動</button></span>
       </div>
       ${row('closePop();toggleSpeedCard()', '速さ・メトロノーム',
-          s.bpm + ' BPM · 1行 ' + beatsPerLineOf(s) + '拍', 'speed')}
+          'スクロール ' + scrollPctOf(s) + '% · ' + s.bpm + ' BPM', 'speed')}
     </div>
     ${isViewer ? '' : `
     <div class="msec" style="margin-top:14px">この曲<button class="qb" style="margin-left:7px;vertical-align:-3px"
