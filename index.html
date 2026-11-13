@@ -1437,7 +1437,8 @@ const HELP = {
   speed: ['速さとメトロノーム', `
     <p>このアプリの譜面は歌詞カードなので、1行が何小節ぶんかは行ごとにまちまちです。
       そのため<b>スクロールの速さと BPM は切り離してあります</b>。</p>
-    <p><b>自動スクロール</b>…0〜100% で自分で決めます。100% で4秒に1行、50% なら8秒に1行です。
+    <p><b>自動スクロール</b>…0〜100% で自分で決めます。100% が4秒に1行でいちばん速く、そこから<b>25% 下げるごとに倍の時間</b>をかけます
+      （75%で8秒、50%で16秒、25%で32秒）。ゆっくりのほうを細かく決められるようにしてあります。
       文字の大きさを変えても見え方は同じになります。
       流しながら ＋ − を押せば、走ったまま微調整できます。</p>
     <p><b>メトロノーム</b>…BPM どおりにクリックが鳴ります。拍子の1拍目だけ高い音です。
@@ -2213,7 +2214,7 @@ const FB_CONFIG = {
 };
 
 // このファイルの版。差し替えたかどうかの目印になる
-const APP_BUILD = 'V261113-17b';
+const APP_BUILD = 'V261113-17c';
 
 let fb = null, fbUser = null, fbUnsub = null, syncState = 'off', pushTimer = null;
 let syncPaused = false;   // まとめ消しの最中だけ true。消しかけの状態が戻ってくるのを防ぐ
@@ -3153,12 +3154,12 @@ function startMetaSync(){
 function migrateSongs(){
   let changed = false;
   // スクロール速度の決め方を変えたので、曲ごとの指定を一度だけ外して
-  // 全曲いったん既定の 50%（4秒に1行）にそろえる。
+  // 全曲いったん既定の 75%（8秒に1行）にそろえる。
   // 曲ごとに印（sv）を付けるので、そのあと自分で決め直した値は残る
   songs.forEach(x=>{
-    if (!x || x.sv >= 1) return;
+    if (!x || x.sv >= 2) return;
     if (x.scrollPct != null) delete x.scrollPct;
-    x.sv = 1;
+    x.sv = 2;
     changed = true;
   });
   // vgroup が無い曲は「自分ひとりのまとまり」として扱う（groupKey が id で代用するので書き込みはしない）
@@ -4379,14 +4380,17 @@ function drawSpeedNote(){
 }
 function toggleScroll(){ scrolling ? stopScroll() : startScroll(); }
 // 自動スクロールの速さ（%）。BPM とは別もの。
-// 100% で「4秒に1行」。50% なら「8秒に1行」。文字を大きくしても同じ見え方になる
-const SCROLL_FULL_SEC = 4;
-const SCROLL_PCT_DEF = 50;
+// 100% で「4秒に1行」。そこから 25% 下げるごとに倍の時間をかける
+//   100% = 4秒 / 75% = 8秒 / 50% = 16秒 / 25% = 32秒
+// ゆっくりのほうを細かく刻めるようにしてある。文字を大きくしても見え方は同じ
+const SCROLL_FULL_SEC  = 4;
+const SCROLL_HALF_STEP = 25;
+const SCROLL_PCT_DEF   = 75;
 // 速さの決め方を変えたので、端末に覚えている数字も一度だけ既定に戻す
 try{
-  if (localStorage.getItem('cn_spdreset') !== '1'){
+  if (localStorage.getItem('cn_spdreset') !== '2'){
     localStorage.setItem('scrollPct', String(SCROLL_PCT_DEF));
-    localStorage.setItem('cn_spdreset', '1');
+    localStorage.setItem('cn_spdreset', '2');
   }
 }catch(e){}
 function scrollPctOf(s){
@@ -4395,7 +4399,9 @@ function scrollPctOf(s){
   const d = parseInt(devGet('scrollPct'), 10);
   return (d && d >= 1) ? Math.min(100, d) : SCROLL_PCT_DEF;
 }
-function secPerLineOf(s){ return SCROLL_FULL_SEC * 100 / scrollPctOf(s); }
+function secPerLineOf(s){
+  return SCROLL_FULL_SEC * Math.pow(2, (100 - scrollPctOf(s)) / SCROLL_HALF_STEP);
+}
 // 譜面1行ぶんの高さ。実際に出ている行から測る
 function sheetRowH(){
   const sheet = document.getElementById('sheet');
