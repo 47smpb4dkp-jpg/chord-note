@@ -1437,7 +1437,7 @@ const HELP = {
   speed: ['速さとメトロノーム', `
     <p>このアプリの譜面は歌詞カードなので、1行が何小節ぶんかは行ごとにまちまちです。
       そのため<b>スクロールの速さと BPM は切り離してあります</b>。</p>
-    <p><b>自動スクロール</b>…0〜100% で自分で決めます。100% で2秒に1行、50% なら4秒に1行です。
+    <p><b>自動スクロール</b>…0〜100% で自分で決めます。100% で4秒に1行、50% なら8秒に1行です。
       文字の大きさを変えても見え方は同じになります。
       流しながら ＋ − を押せば、走ったまま微調整できます。</p>
     <p><b>メトロノーム</b>…BPM どおりにクリックが鳴ります。拍子の1拍目だけ高い音です。
@@ -2213,7 +2213,7 @@ const FB_CONFIG = {
 };
 
 // このファイルの版。差し替えたかどうかの目印になる
-const APP_BUILD = 'V261113-17';
+const APP_BUILD = 'V261113-17b';
 
 let fb = null, fbUser = null, fbUnsub = null, syncState = 'off', pushTimer = null;
 let syncPaused = false;   // まとめ消しの最中だけ true。消しかけの状態が戻ってくるのを防ぐ
@@ -4379,8 +4379,8 @@ function drawSpeedNote(){
 }
 function toggleScroll(){ scrolling ? stopScroll() : startScroll(); }
 // 自動スクロールの速さ（%）。BPM とは別もの。
-// 100% で「2秒に1行」。50% なら「4秒に1行」。文字を大きくしても同じ見え方になる
-const SCROLL_FULL_SEC = 2;
+// 100% で「4秒に1行」。50% なら「8秒に1行」。文字を大きくしても同じ見え方になる
+const SCROLL_FULL_SEC = 4;
 const SCROLL_PCT_DEF = 50;
 // 速さの決め方を変えたので、端末に覚えている数字も一度だけ既定に戻す
 try{
