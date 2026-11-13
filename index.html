@@ -473,6 +473,8 @@ textarea{min-height:190px;resize:vertical;white-space:pre;overflow-wrap:normal;o
 @media (prefers-reduced-motion:reduce){ .recdot{animation:none} }
 
 /* 曲のメニュー */
+.spdrow{display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap}
+.spdrow .sl{font-size:.74rem;color:var(--fg-dim);font-weight:700;flex:0 0 58px}
 .msec{font-size:.72rem;letter-spacing:.09em;color:var(--fg-dim);font-weight:700;margin:0 0 7px}
 .mlist{display:flex;flex-direction:column;gap:6px}
 .mrow{display:flex;align-items:center;gap:10px;width:100%;text-align:left;
@@ -1425,6 +1427,15 @@ const HELP = {
       iPad で貼った音源はパソコンには出てきません。外しても譜面は残ります。</p>
     <p>溜まってきたら、楽曲リストの下の<b>「端末の空き容量を見る」</b>から、
       曲ごとの一覧を見てまとめて外せます。</p>`],
+  speed: ['速さとメトロノーム', `
+    <p><b>BPM</b> は 1分間の拍数です。メトロノームはこの数字どおりに鳴ります。</p>
+    <p><b>1行の長さ</b> は、譜面を1行送るのに何拍かけるかです。
+      8拍なら、4拍子で2小節ぶん進むあいだに1行ぶん下がります。</p>
+    <p>自動スクロールの速さは、この2つから決まります
+      （1行の高さ ÷ 1行にかける秒数）。<b>メトロノームと同じ時計で動くので、
+      鳴っているクリックに合わせて譜面が進みます</b>。</p>
+    <p>合わないときは、まずメトロノームを鳴らして BPM を曲に合わせ、
+      そのあと「1行の長さ」で流れ方を調整してください。</p>`],
   look: ['表示のしかた', `
     <p><b>スクロール速度</b>…自動スクロールの速さです。曲の BPM と連動しています。</p>
     <p><b>左ぞろえ／中央ぞろえ</b>…押すたびに切り替わります。中央にしても、
@@ -2193,7 +2204,7 @@ const FB_CONFIG = {
 };
 
 // このファイルの版。差し替えたかどうかの目印になる
-const APP_BUILD = 'V261113-12b';
+const APP_BUILD = 'V261113-14';
 
 let fb = null, fbUser = null, fbUnsub = null, syncState = 'off', pushTimer = null;
 let syncPaused = false;   // まとめ消しの最中だけ true。消しかけの状態が戻ってくるのを防ぐ
@@ -3377,7 +3388,7 @@ function renderTabs(){
 function stopSongRec(){
   if (songRec && songRec.state === 'recording'){ try{ songRec.stop(); }catch(e){} }
 }
-function go(t){ stopScroll(); stopSongRec(); tab=t; openSong=null; editing=null; batchEdit=null; render(); }
+function go(t){ stopScroll(); stopSongRec(); stopMetro(); tab=t; openSong=null; editing=null; batchEdit=null; render(); }
 // いまページめくりが及ぶ範囲の名前。絞り込んでいればその名前を出す
 function navScopeName(){
   if (folderFilter === 'fav')   return '★ お気に入り';
@@ -3386,7 +3397,7 @@ function navScopeName(){
   return groupMode === 'artist' ? '楽曲リスト（作曲者・バンド順）' : '楽曲リスト（すべて）';
 }
 function openSongView(id, from){
-  stopScroll(); stopSongRec();
+  stopScroll(); stopSongRec(); stopMetro();
   if (from === 'pl'){
     const pl = playlists.find(x=>x.id===openList);
     navIds = plOrder.slice();
@@ -3427,7 +3438,7 @@ function songStep(d){
   const j = i + d;
   if (j < 0){ alertShare('このリストの最初の曲です'); return; }
   if (j >= navIds.length){ alertShare('このリストの最後の曲です'); return; }
-  stopScroll(); stopSongRec();
+  stopScroll(); stopSongRec(); stopMetro();
   openSong = navIds[j];
   const x = songs.find(s=>s.id===openSong);
   if (x){ x.plays = (x.plays||0)+1; x.lastOpen = Date.now(); persistCount(); }
@@ -3667,7 +3678,7 @@ function vLabel(s){ return (s && (s.vname||'').trim()) || 'もとの版'; }
 function switchVersion(id){
   const s = songs.find(x=>x.id===id);
   if (!s) return;
-  stopScroll(); stopSongRec();
+  stopScroll(); stopSongRec(); stopMetro();
   // ページめくりの並びのなかで、今いる位置を新しいバージョンに差し替える
   const cur = navIds.indexOf(openSong);
   if (cur >= 0) navIds[cur] = id; else alignNav(id);
@@ -3769,9 +3780,10 @@ function renderInner(){
           Key <b>${esc(soundKey||'—')}</b></button>
         <button class="chipbtn tap" onclick="openCapo()" aria-label="カポを選ぶ">
           Capo <b>${s.capo||0}</b>${playKey && (s.capo||0) ? `<i>${esc(playKey)}</i>` : ''}</button>
-        <button class="chipbtn tap${speedOpen?' on':''}" onclick="toggleSpeedCard()"
-          aria-label="スクロール速度を変える"><b>${s.bpm}</b> BPM</button>
+        <button class="chipbtn tap${speedOpen?' on':''}" id="bpmChip" onclick="toggleSpeedCard()"
+          aria-label="速さを変える"><b>${s.bpm}</b> BPM</button>
         <button class="act" id="scrollBtn" onclick="toggleScroll()">${scrolling?'停止':'自動スクロール'}</button>
+        <button class="ghost${metroOn?' on':''}" id="metroBtn" onclick="toggleMetro()">♩ ${metroOn?'停止':'メトロノーム'}</button>
         <button class="ghost" onclick="openSongMenu()" aria-label="この曲のメニュー">⋯ メニュー</button>
       </div>
       ${vers.length > 1 ? `<div class="vrow">
@@ -3785,11 +3797,24 @@ function renderInner(){
       const bar = document.createElement('div');
       bar.className = 'card';
       bar.id = 'speedCard';
-      bar.innerHTML = headLine('スクロール速度', 'look',
+      const bpl = beatsPerLineOf(s), top = s.beat || 4;
+      bar.innerHTML = headLine('速さ', 'speed',
           `<span class="sp"></span><button class="mini" onclick="toggleSpeedCard()">閉じる</button>`) +
-        `<div class="slider"><input type="range" id="bpmRange" min="40" max="200" value="${s.bpm}"
-          oninput="setBpm(this.value)"><span class="bpm" id="bpmOut">${s.bpm} BPM</span></div>`;
+        `<div class="slider"><input type="range" id="bpmRange" min="30" max="260" value="${s.bpm}"
+          oninput="setBpm(this.value)"><span class="bpm" id="bpmOut">${s.bpm} BPM</span></div>
+        <div class="spdrow">
+          <span class="sl">1行の長さ</span>
+          <span class="picker cp">${[2,4,6,8,12,16].map(n=>
+            `<button class="pk${n===bpl?' on':''}" onclick="setBeatsPerLine(${n})">${n}拍</button>`).join('')}</span>
+        </div>
+        <div class="spdrow">
+          <span class="sl">拍子</span>
+          <span class="picker cp">${[2,3,4,6].map(n=>
+            `<button class="pk${n===top?' on':''}" onclick="setBeatTop(${n})">${n}拍子</button>`).join('')}</span>
+        </div>
+        <p class="hint" id="speedNote" style="margin-top:9px"></p>`;
       view.appendChild(bar);
+      drawSpeedNote();
     }
 
     if (!isViewer && audioOpen){
@@ -4270,16 +4295,69 @@ function capo(n){
   persist(); render();
 }
 function setBpm(v){
-  const s=songs.find(x=>x.id===openSong); s.bpm=+v;
-  document.getElementById('bpmOut').textContent = v+' BPM';
+  const s=songs.find(x=>x.id===openSong); if(!s) return;
+  s.bpm = Math.max(30, Math.min(260, +v || 100));
+  const o = document.getElementById('bpmOut');
+  if (o) o.textContent = s.bpm + ' BPM';
+  const c = document.getElementById('bpmChip');
+  if (c) c.innerHTML = '<b>' + s.bpm + '</b> BPM';
+  drawSpeedNote();
+  if (scrolling){ stopScroll(); startScroll(); }   // 速さを付け直す
   persist();
 }
+function setBeatsPerLine(n){
+  const s=songs.find(x=>x.id===openSong); if(!s) return;
+  s.beatsPerLine = n;
+  render();
+  if (scrolling){ stopScroll(); startScroll(); }
+  persist();
+}
+function setBeatTop(n){
+  const s=songs.find(x=>x.id===openSong); if(!s) return;
+  s.beat = n;
+  render();
+  persist();
+}
+// 「1行はおよそ○秒」をその場で出す
+function drawSpeedNote(){
+  const s=songs.find(x=>x.id===openSong); if(!s) return;
+  const el = document.getElementById('speedNote');
+  if (!el) return;
+  const sec = beatsPerLineOf(s) * 60 / (s.bpm || 100);
+  const top = s.beat || 4;
+  el.innerHTML = `1行を <b>${beatsPerLineOf(s)}</b> 拍で送ります` +
+    `（${top}拍子で <b>${(beatsPerLineOf(s)/top).toFixed(beatsPerLineOf(s)%top?1:0)}</b> 小節、` +
+    `およそ <b>${sec.toFixed(1)}</b> 秒に1行）。`;
+}
 function toggleScroll(){ scrolling ? stopScroll() : startScroll(); }
+// 1行を何拍で送るか。8拍＝4拍子で2小節ぶん
+function beatsPerLineOf(s){
+  const n = s && parseInt(s.beatsPerLine, 10);
+  return (n && n >= 1) ? n : 8;
+}
+// 譜面1行ぶんの高さ。実際に出ている行から測る
+function sheetRowH(){
+  const sheet = document.getElementById('sheet');
+  if (!sheet) return 0;
+  const rows = sheet.querySelectorAll('.seg, .lrow');
+  if (!rows.length) return 0;
+  let h = 0;
+  rows.forEach(r=>{ h += r.getBoundingClientRect().height; });
+  return h / rows.length;
+}
+// いまの設定だと1秒に何ピクセル送るか
+function scrollPxPerSec(s){
+  const bpm = s.bpm || 100;
+  const rowH = sheetRowH();
+  if (!rowH) return (bpm/60) * 9;
+  const secPerLine = beatsPerLineOf(s) * 60 / bpm;
+  return rowH / secPerLine;
+}
 function startScroll(){
   const s=songs.find(x=>x.id===openSong); if(!s) return;
   scrolling = true;
   const main = document.getElementById('main');
-  const pxPerSec = (s.bpm/60) * 9;  // 目安
+  const pxPerSec = scrollPxPerSec(s);
   let last = performance.now(), acc = 0;
   const step = (t)=>{
     if (!scrolling) return;
@@ -4432,7 +4510,7 @@ function setMyChord(v){
 
 /* ---- 編集 ---- */
 let editSnap = null;
-function editSong(id){ if (isViewer) return; stopScroll(); stopSongRec();
+function editSong(id){ if (isViewer) return; stopScroll(); stopSongRec(); stopMetro();
   // キーやカポを直すとその場で効くので、戻れるように控えを取っておく
   const s0 = songs.find(x=>x.id===id);
   editSnap = s0 ? JSON.stringify(s0) : null;
@@ -6179,6 +6257,51 @@ function toggleSpeedCard(){
   }
 }
 
+/* ---- メトロノーム。スクロールと同じ BPM で鳴るので、速さを耳で確かめられる ---- */
+let metroCtx = null, metroTimer = null, metroOn = false, metroNext = 0, metroBeat = 0;
+function metroClick(at, accent){
+  const o = metroCtx.createOscillator(), g = metroCtx.createGain();
+  o.type = 'square';
+  o.frequency.value = accent ? 1560 : 1040;
+  g.gain.setValueAtTime(0.0001, at);
+  g.gain.exponentialRampToValueAtTime(accent ? 0.34 : 0.19, at + 0.002);
+  g.gain.exponentialRampToValueAtTime(0.0001, at + 0.05);
+  o.connect(g); g.connect(metroCtx.destination);
+  o.start(at); o.stop(at + 0.07);
+}
+function metroTick(){
+  const s = songs.find(x=>x.id===openSong);
+  if (!s || !metroOn || !metroCtx){ return; }
+  const spb = 60 / (s.bpm || 100);
+  const top = s.beat || 4;
+  while (metroNext < metroCtx.currentTime + 0.13){
+    metroClick(metroNext, metroBeat % top === 0);
+    metroNext += spb;
+    metroBeat++;
+  }
+}
+function startMetro(){
+  const s = songs.find(x=>x.id===openSong); if (!s) return;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC){ alertShare('この端末では音を鳴らせません'); return; }
+  if (!metroCtx) metroCtx = new AC();
+  if (metroCtx.state === 'suspended') metroCtx.resume();
+  metroOn = true; metroBeat = 0;
+  metroNext = metroCtx.currentTime + 0.08;
+  metroTimer = setInterval(metroTick, 25);
+  metroTick();
+  const b = document.getElementById('metroBtn');
+  if (b){ b.textContent = '♩ 停止'; b.classList.add('on'); }
+}
+function stopMetro(){
+  metroOn = false;
+  if (metroTimer) clearInterval(metroTimer);
+  metroTimer = null;
+  const b = document.getElementById('metroBtn');
+  if (b){ b.textContent = '♩ メトロノーム'; b.classList.remove('on'); }
+}
+function toggleMetro(){ metroOn ? stopMetro() : startMetro(); }
+
 /* ---- 動画で録る。撮ったらすぐドライブへ上げて、端末には残さない ---- */
 let vidRec = null, vidChunks = [], vidStream = null, vidTimer = null,
     vidStart = 0, vidSongId = null, vidMin = false, vidBusy = false;
@@ -6359,7 +6482,8 @@ function openSongMenu(){
           <button class="mbig" onclick="menuSize(1)" aria-label="大きく">＋</button>
           <button class="mini" onclick="menuSize(0)">自動</button></span>
       </div>
-      ${row('closePop();toggleSpeedCard()', 'スクロール速度', (speedOpen?'いま出ています':'バーを出す') + ' · ' + s.bpm + ' BPM')}
+      ${row('closePop();toggleSpeedCard()', '速さ・メトロノーム',
+          s.bpm + ' BPM · 1行 ' + beatsPerLineOf(s) + '拍', 'speed')}
     </div>
     ${isViewer ? '' : `
     <div class="msec" style="margin-top:14px">この曲<button class="qb" style="margin-left:7px;vertical-align:-3px"
