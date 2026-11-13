@@ -2214,7 +2214,7 @@ const FB_CONFIG = {
 };
 
 // このファイルの版。差し替えたかどうかの目印になる
-const APP_BUILD = 'V261113-17c';
+const APP_BUILD = 'V261114-04';
 
 let fb = null, fbUser = null, fbUnsub = null, syncState = 'off', pushTimer = null;
 let syncPaused = false;   // まとめ消しの最中だけ true。消しかけの状態が戻ってくるのを防ぐ
@@ -3030,7 +3030,7 @@ async function driveRestore(){
     batch = out;
     checkBatchDup();
     if (box) box.innerHTML = '';
-    storageOpen = false;
+    settingsOpen = false;
     go('new');
     setTimeout(()=>{
       drawBatch();
@@ -3407,7 +3407,7 @@ function renderTabs(){
 function stopSongRec(){
   if (songRec && songRec.state === 'recording'){ try{ songRec.stop(); }catch(e){} }
 }
-function go(t){ stopScroll(); stopSongRec(); stopMetro(); tab=t; openSong=null; editing=null; batchEdit=null; render(); }
+function go(t){ stopScroll(); stopSongRec(); stopMetro(); settingsOpen=false; tab=t; openSong=null; editing=null; batchEdit=null; render(); }
 // いまページめくりが及ぶ範囲の名前。絞り込んでいればその名前を出す
 function navScopeName(){
   if (folderFilter === 'fav')   return '★ お気に入り';
@@ -3869,6 +3869,14 @@ function renderInner(){
     return;
   }
 
+  if (tab==='list' && settingsOpen && !isViewer){
+    const d = document.createElement('div');
+    d.innerHTML = settingsHtml();
+    view.appendChild(d);
+    renderSyncBar();
+    drawStorage();
+    return;
+  }
   if (tab==='list'){
     // 同じ曲の別バージョンは1行にまとめる
     const reps = groupReps();
@@ -3882,6 +3890,7 @@ function renderInner(){
       : `<div class="hdr-title">楽曲リスト<div class="hdr-sub" style="margin-top:2px">${reps.length} songs${
             songs.length !== reps.length ? ` · ${songs.length} バージョン` : ''}</div></div>
          ${awakeSwitch()}
+         <button class="ghost${settingsOpen?' on':''}" onclick="toggleSettings()">設定</button>
          <button class="ghost" onclick="toggleSelectMode()">選択</button>
          <button class="act" onclick="go('new')">＋ 新規</button>`;
     const keyOf = x => groupMode==='artist' ? (x.artist||'不明') : (x.folder||'未分類');
@@ -3900,19 +3909,8 @@ function renderInner(){
         <div class="btnrow" style="justify-content:center">
           <button class="act" onclick="go('new')">曲を作る</button></div></div>`;
       listOrder = [];
-      if (storageOpen){
-        const sb = document.createElement('div');
-        sb.className = 'card';
-        sb.id = 'storageCard';
-        sb.style.marginTop = '12px';
-        sb.innerHTML = `<div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
-          <h2 style="margin:0;flex:1">端末の空き容量</h2>
-          <button class="mini" onclick="closeStorage()">閉じる</button></div><div id="storageBox"></div>`;
-        d.appendChild(sb);
-      }
       view.appendChild(d);
       renderSyncBar();
-      if (storageOpen) drawStorage();
       return;
     }
     let html = syncHtml + `<div class="picker" style="margin-bottom:14px">
@@ -3988,24 +3986,11 @@ function renderInner(){
       </div>`;
     }
     if (!isViewer && !selectMode){
-      html += `<div class="buildline">版 ${APP_BUILD}</div>
-      <div class="resetline">
-        <button onclick="openStorage()">端末の空き容量を見る</button>
-        ${songs.length?`<button onclick="openTidy()">読み込み済みの曲を整理し直す</button>
-        <button onclick="askResetAll()">すべての曲を消す</button>`:''}</div>`;
-    }
-    if (storageOpen){
-      // 押したボタンのすぐ下に出す（上に戻らなくて済むように）
-      html += `<div class="card" id="storageCard" style="margin-top:12px">
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
-          <h2 style="margin:0;flex:1">端末の空き容量</h2>
-          <button class="mini" onclick="closeStorage()">閉じる</button></div>
-        <div id="storageBox"></div></div>`;
+      html += `<div class="buildline">版 ${APP_BUILD}</div>`;
     }
     d.innerHTML = html;
     view.appendChild(d);
     renderSyncBar();
-    if (storageOpen) drawStorage();
     if (!isViewer && fbUser && !selectMode) listShares();
   }
 
@@ -5992,19 +5977,57 @@ function doMerge(){
   alertShare(n + 'つを「' + base.title + '」のバージョンにまとめました');
 }
 
-/* ---- 端末の空き容量 ---- */
-let storageOpen = false;
-function openStorage(){
-  storageOpen = true;
-  go('list');
-  setTimeout(()=>{
-    drawStorage();
-    // 開いた欄が見える位置まで送る
-    const el = document.getElementById('storageCard');
-    if (el) el.scrollIntoView({behavior:'smooth', block:'center'});
-  }, 40);
+/* ---- 設定の画面。端末まわりと、曲のデータの後始末をここにまとめる ---- */
+let settingsOpen = false;
+function toggleSettings(){
+  settingsOpen = !settingsOpen;
+  if (settingsOpen){ tab = 'list'; openSong = null; selectMode = false; }
+  render();
+  if (settingsOpen) document.getElementById('main').scrollTop = 0;
 }
-function closeStorage(){ storageOpen = false; render(); }
+function closeSettings(){ settingsOpen = false; render(); }
+// 容量のエラーからも、ここへ連れてくる
+function openStorage(){
+  settingsOpen = true;
+  tab = 'list'; openSong = null;
+  render();
+  setTimeout(()=>{
+    const el = document.getElementById('storageBox');
+    if (el) el.scrollIntoView({behavior:'smooth', block:'center'});
+  }, 60);
+}
+function closeStorage(){ closeSettings(); }
+function settingsHtml(){
+  const awake = canKeepAwake();
+  return `<div class="card">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+        <h2 style="margin:0;flex:1">設定</h2>
+        <button class="mini" onclick="closeSettings()">閉じる</button></div>
+      <div class="msec">この端末</div>
+      <div class="mlist">
+        ${awake ? `<div class="mrow static">
+          <span class="mn">画面を消さない<i>${keepAwakeOn()
+            ? 'このアプリを開いている間は暗くなりません'
+            : '使っていないと、ふだんどおり自動で暗くなります'}</i></span>
+          <span class="mctl">${awakeSwitch()}
+            <button class="qb" onclick="openHelp('awake')" aria-label="説明">?</button></span>
+        </div>` : ''}
+      </div>
+      <div class="msec" style="margin-top:16px">曲のデータ</div>
+      <div class="mlist">
+        <div class="mrow"><button class="mn mnb" onclick="openTidy()">読み込み済みの曲を整理し直す<i>曲名・キー・カポ・テンポの欄を付け直す／ドライブへ全部書き出す</i></button>
+          <button class="qb" onclick="openHelp('tidy')" aria-label="説明">?</button></div>
+        <div class="mrow"><button class="mn mnb" onclick="askResetAll()" style="color:#c0392b">すべての曲を消す<i>この端末とクラウドの両方から消えます。元に戻せません</i></button></div>
+      </div>
+    </div>
+    <div class="card" style="margin-top:12px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+        <h2 style="margin:0;flex:1">端末の空き容量</h2>
+        <button class="qb" onclick="openHelp('storage')" aria-label="説明">?</button></div>
+      <div id="storageBox"></div>
+    </div>
+    <div class="buildline">版 ${APP_BUILD}</div>`;
+}
 
 async function drawStorage(){
   const box = document.getElementById('storageBox');
