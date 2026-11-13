@@ -2170,8 +2170,7 @@ async function runShots(){
   shotBusy = false;
   clearShots();
   // 下の「貼り付けて作る」に入れて、その場で直せるようにする
-  draft.text = text;
-  applyParsedToDraft();
+  applyParsedToDraft(text);
   render();
   const ta = document.getElementById('draftText');
   if (ta) ta.scrollIntoView({behavior:'smooth', block:'start'});
@@ -2396,7 +2395,7 @@ const FB_CONFIG = {
 };
 
 // このファイルの版。差し替えたかどうかの目印になる
-const APP_BUILD = 'V261114-04b';
+const APP_BUILD = 'V261114-08';
 
 let fb = null, fbUser = null, fbUnsub = null, syncState = 'off', pushTimer = null;
 let syncPaused = false;   // まとめ消しの最中だけ true。消しかけの状態が戻ってくるのを防ぐ
@@ -7038,6 +7037,8 @@ function alert0(){
 
 // 読み込んだ内容から、曲名・アーティスト・キー・カポを欄に反映する
 function applyParsedToDraft(text, fileName){
+  text = String(text == null ? '' : text);
+  if (!text.trim()) return;          // 空で呼ばれたときに中身を消さない
   const p = parseSheet(text);
   draft.text   = text;
   draft.title  = p.title || (fileName || '').replace(/\.[^.]+$/,'') || '';
