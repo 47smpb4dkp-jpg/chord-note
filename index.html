@@ -453,6 +453,18 @@ textarea{min-height:190px;resize:vertical;white-space:pre;overflow-wrap:normal;o
 .stat b{color:var(--accent);font-family:var(--font-mono);font-variant-numeric:tabular-nums}
 .slider{display:flex;align-items:center;gap:10px}
 
+/* 読み取る写真のならび */
+.shots{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px}
+.shot{position:relative;width:118px;border:1px solid var(--line);border-radius:9px;
+  overflow:hidden;background:var(--surface-2)}
+.shot img{display:block;width:100%;height:84px;object-fit:cover}
+.shot .pno{position:absolute;top:4px;left:4px;background:var(--accent);color:#fff;
+  font-size:.66rem;font-weight:700;border-radius:999px;min-width:17px;height:17px;
+  display:flex;align-items:center;justify-content:center;padding:0 5px}
+.shot .sact{display:flex;gap:3px;padding:4px;justify-content:center}
+.shot .sact .mini{padding:2px 6px;font-size:.72rem}
+.shot .sact .mini[disabled]{opacity:.35;cursor:default}
+
 /* 録画中に左下へ出す小さなプレビュー */
 #vidbox{position:fixed;left:12px;z-index:60;display:flex;flex-direction:column;gap:6px;
   align-items:flex-start;bottom:calc(74px + env(safe-area-inset-bottom,0px))}
@@ -1496,6 +1508,21 @@ const HELP = {
     <p>そのため<b>先にドライブにつないでおく必要があります</b>。
       送れなかったときだけ、取り出せるように手元へ書き出します。</p>
     <p>録った動画はメニューの「録った動画」から一覧で開けます。</p>`],
+  shot: ['写真から読み取る', `
+    <p>手書きのノートや本を撮って、文字に起こします。<b>何枚でも足せます</b>。
+      並んでいる順に上から下へつなげるので、2ページにまたがる曲は撮った順に並べてください。
+      ← → で入れ替え、× で外せます。</p>
+    <p>読み取ったものは、下の「貼り付けて作る」の<b>コード譜の欄に入ります</b>。
+      コード行か歌詞行かの振り分けと、コードの横位置はそこで自動で付きます。
+      そのまま保存せず、必ず見て直してください。</p>
+    <p><b>手書きについて</b>…はじめの状態は活字向けの読み取りなので、
+      手書きのひらがな・カタカナはほとんど読めません。
+      設定で Google の鍵を入れると、<b>手書き対応の読み取り</b>に切り替わります。
+      それでも手書きの歌詞は間違いが混ざります。
+      コード名（アルファベットと数字）のほうが読めるので、
+      <b>コードは読み取り、歌詞は打ち直す</b>くらいの使い方が現実的です。</p>
+    <p>鍵は Google Cloud の Vision API のものです。<b>毎月1,000枚まで無料</b>で、
+      超えた分が1,000枚あたり約230円です。無料の範囲でもカードの登録は要ります。</p>`],
   awake: ['画面を消さない', `
     <p>入れておくと、このアプリを開いている間は<b>画面が自動で暗くならず、消えません</b>。
       演奏中に譜面が消えてしまうのを防げます。</p>
@@ -2072,6 +2099,161 @@ function ocrToText(data){
 }
 
 // 画像から文字を読み取る。初回だけ日本語の辞書を取りに行くので時間がかかる
+/* ---- 写真から読み取る。何枚でも足せて、並べた順につなげる ---- */
+let shots = [];          // {file, url, name}
+let shotBusy = false;
+function takeShots(files){
+  const list = [...(files || [])].filter(f=>/^image\//.test(f.type));
+  if (!list.length) return;
+  list.forEach(f=>shots.push({file:f, url:URL.createObjectURL(f), name:f.name || '写真'}));
+  drawShots();
+}
+function dropShot(i){
+  const sh = shots[i]; if (!sh) return;
+  URL.revokeObjectURL(sh.url);
+  shots.splice(i, 1);
+  drawShots();
+}
+function moveShot(i, d){
+  const j = i + d;
+  if (j < 0 || j >= shots.length) return;
+  const t = shots[i]; shots[i] = shots[j]; shots[j] = t;
+  drawShots();
+}
+function clearShots(){
+  shots.forEach(x=>URL.revokeObjectURL(x.url));
+  shots = [];
+  drawShots();
+}
+function drawShots(){
+  const box = document.getElementById('shotBox');
+  if (!box) return;
+  if (!shots.length){ box.innerHTML = ''; return; }
+  box.innerHTML = `<div class="shots">${shots.map((sh,i)=>`
+      <div class="shot">
+        <img src="${sh.url}" alt="${esc(sh.name)}">
+        <span class="pno">${i+1}</span>
+        <div class="sact">
+          <button class="mini" onclick="moveShot(${i},-1)" ${i===0?'disabled':''} aria-label="前へ">←</button>
+          <button class="mini" onclick="moveShot(${i},1)" ${i===shots.length-1?'disabled':''} aria-label="後ろへ">→</button>
+          <button class="mini" onclick="dropShot(${i})" aria-label="外す">×</button>
+        </div>
+      </div>`).join('')}</div>
+    <div class="btnrow" style="margin-top:10px">
+      <button class="act" onclick="runShots()" ${shotBusy?'disabled':''}>${shots.length} 枚を読み取る</button>
+      <button class="ghost" onclick="clearShots()" ${shotBusy?'disabled':''}>ぜんぶ外す</button>
+    </div>
+    <p class="hint">左から順に、上から下へつなげます。2ページにまたがる曲は、この順に並べてください。</p>
+    <div id="shotOut"></div>`;
+}
+async function runShots(){
+  if (shotBusy || !shots.length) return;
+  shotBusy = true; drawShots();
+  const out = document.getElementById('shotOut');
+  const say = (h)=>{ if (out) out.innerHTML = h; };
+  const parts = [];
+  try{
+    for (let i = 0; i < shots.length; i++){
+      say(`<p class="hint" style="margin:8px 0 0"><b>${i+1} / ${shots.length} 枚目</b>を読み取っています…</p>`);
+      const t = await readImageAuto(shots[i].file, (pct, msg)=>{
+        say(`<p class="hint" style="margin:8px 0 0"><b>${i+1} / ${shots.length} 枚目</b>…` +
+            `${msg ? esc(msg) : (pct != null ? pct + '%' : '')}</p>`);
+      });
+      parts.push(t.replace(/\s+$/, ''));
+    }
+  }catch(e){
+    shotBusy = false; drawShots();
+    say(`<p class="hint" style="margin:8px 0 0;color:#c0392b">読み取れませんでした: ${esc(e.message)}</p>`);
+    return;
+  }
+  const text = parts.join('\n\n');
+  shotBusy = false;
+  clearShots();
+  // 下の「貼り付けて作る」に入れて、その場で直せるようにする
+  draft.text = text;
+  applyParsedToDraft();
+  render();
+  const ta = document.getElementById('draftText');
+  if (ta) ta.scrollIntoView({behavior:'smooth', block:'start'});
+  alertShare('読み取りました。下の「コード譜」で直してください');
+}
+
+/* ---- 手書きも読める読み取り（Google Cloud Vision）。鍵を入れたときだけ使う ---- */
+function visionKey(){ try{ return (localStorage.getItem('visionKey') || '').trim(); }catch(e){ return ''; } }
+function setVisionKey(v){
+  try{
+    const k = String(v || '').trim();
+    k ? localStorage.setItem('visionKey', k) : localStorage.removeItem('visionKey');
+  }catch(e){}
+  render();
+  alertShare(visionKey() ? '手書きの読み取りを使う設定にしました' : '鍵を消しました');
+}
+// 画像を JPEG の文字列に直す（Vision はこの形で受け取る）
+async function imgToBase64(url){
+  const img = await new Promise((res, rej)=>{
+    const im = new Image();
+    im.onload = ()=>res(im); im.onerror = ()=>rej(new Error('画像として開けません'));
+    im.src = url;
+  });
+  const cv = document.createElement('canvas');
+  const sc = Math.min(1, 2400 / Math.max(img.width, img.height));
+  cv.width = Math.round(img.width * sc); cv.height = Math.round(img.height * sc);
+  cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+  return cv.toDataURL('image/jpeg', 0.9).split(',')[1];
+}
+async function readImageVision(file, onProgress){
+  const key = visionKey();
+  if (onProgress) onProgress(null, '画像を整えています…');
+  const url = await normalizeImage(file);
+  let b64;
+  try{ b64 = await imgToBase64(url); } finally { URL.revokeObjectURL(url); }
+  if (onProgress) onProgress(null, '読み取っています…');
+  const r = await fetch('https://vision.googleapis.com/v1/images:annotate?key=' + encodeURIComponent(key), {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({requests:[{
+      image:{content:b64},
+      features:[{type:'DOCUMENT_TEXT_DETECTION'}],
+      imageContext:{languageHints:['ja','en']}}]})});
+  const j = await r.json().catch(()=>null);
+  if (!r.ok){
+    const msg = (j && j.error && j.error.message) || ('応答 ' + r.status);
+    if (r.status === 400 && /API key not valid/i.test(msg)) throw new Error('鍵が違うようです');
+    if (r.status === 403) throw new Error('鍵が使えません（API を有効にしたか、鍵の制限を確かめてください）');
+    throw new Error(msg);
+  }
+  const ann = j && j.responses && j.responses[0];
+  if (ann && ann.error) throw new Error(ann.error.message || '読み取れませんでした');
+  const full = ann && ann.fullTextAnnotation;
+  if (!full) throw new Error('文字が見つかりませんでした');
+  // 単語の位置をそのまま桁に直す（PDF と同じ仕組みを使う）
+  const items = [];
+  (full.pages || []).forEach(pg=>(pg.blocks || []).forEach(bl=>(bl.paragraphs || []).forEach(pa=>
+    (pa.words || []).forEach(w=>{
+      const str = (w.symbols || []).map(sy=>sy.text || '').join('');
+      const vs = (w.boundingBox && (w.boundingBox.vertices || w.boundingBox.normalizedVertices)) || [];
+      if (!str.trim() || !vs.length) return;
+      const xs = vs.map(v=>v.x || 0), ys = vs.map(v=>v.y || 0);
+      const x0 = Math.min(...xs), x1 = Math.max(...xs);
+      const y0 = Math.min(...ys), y1 = Math.max(...ys);
+      items.push({str, x:x0, y:-y0, h:(y1-y0) || 10, w:(x1-x0) || 10});
+    }))));
+  if (!items.length) throw new Error('文字が見つかりませんでした');
+  const text = cleanOcrArtifacts(layoutItems(items));
+  if (!text.trim()) throw new Error('文字が見つかりませんでした');
+  return text;
+}
+// 鍵があれば手書きも読めるほうを、なければ今までの読み取りを使う
+async function readImageAuto(file, onProgress){
+  if (visionKey()){
+    try{ return await readImageVision(file, onProgress); }
+    catch(e){
+      if (/鍵/.test(e.message)) throw e;      // 設定の問題は、黙って下げない
+      if (onProgress) onProgress(null, '読み取れなかったので、別の方法で試します…');
+    }
+  }
+  return readImage(file, onProgress);
+}
+
 async function readImage(file, onProgress){
   await loadLib(TESS_URL, ()=>typeof Tesseract !== 'undefined');
   if (onProgress) onProgress(null, '画像を整えています…');
@@ -2214,7 +2396,7 @@ const FB_CONFIG = {
 };
 
 // このファイルの版。差し替えたかどうかの目印になる
-const APP_BUILD = 'V261114-04';
+const APP_BUILD = 'V261114-04b';
 
 let fb = null, fbUser = null, fbUnsub = null, syncState = 'off', pushTimer = null;
 let syncPaused = false;   // まとめ消しの最中だけ true。消しかけの状態が戻ってくるのを防ぐ
@@ -4149,6 +4331,23 @@ function renderInner(){
         <div id="batchOut"></div>
       </div>
       <div class="card">
+        <h2>写真から読み取る<button class="qb" style="margin-left:8px;vertical-align:2px"
+          onclick="openHelp('shot')" aria-label="写真から読み取るの説明">?</button></h2>
+        <p class="sub">手書きのノートや本を、カメラで撮って文字に起こします。
+          2ページにまたがる曲は、何枚でも足せます。${visionKey()
+            ? '<b>手書きの読み取りを使う設定</b>になっています。'
+            : '<b>いまは活字向けの読み取り</b>です。手書きを読むには設定で鍵を入れてください。'}</p>
+        <div class="btnrow">
+          <button class="act" onclick="document.getElementById('pickShotCam').click()">カメラで撮る</button>
+          <button class="ghost" onclick="document.getElementById('pickShotLib').click()">写真を選ぶ</button>
+        </div>
+        <input type="file" id="pickShotCam" accept="image/*" capture="environment" hidden
+          onchange="takeShots(this.files); this.value=''">
+        <input type="file" id="pickShotLib" accept="image/*" multiple hidden
+          onchange="takeShots(this.files); this.value=''">
+        <div id="shotBox"></div>
+      </div>
+      <div class="card">
         <h2>貼り付けて作る<button class="qb" style="margin-left:8px;vertical-align:2px"
           onclick="openHelp('paste')" aria-label="貼り付けて作るの説明">?</button></h2>
         <p class="sub">コード譜のテキストを下の「コード譜」に貼り付けると、コード行と歌詞行を自動で振り分けます。</p>
@@ -4194,6 +4393,7 @@ function renderInner(){
       </div>
       `;
     view.appendChild(d);
+    drawShots();
     drawPalette();
     previewDraft();
     if (batch.length) drawBatch();
@@ -5640,7 +5840,7 @@ async function takeFiles(fileList){
       else if (ext === 'pdf') text = await readPdf(f);
       else if (['jpg','jpeg','png','gif','bmp','webp'].includes(ext)){
         setBatchNote(`「${f.name}」から文字を読み取っています…`);
-        text = await readImage(f);
+        text = await readImageAuto(f);
       }
       else { out.push({name:f.name, folder, ok:false, why:'.'+ext+' は未対応'}); continue; }
     }catch(e){ out.push({name:f.name, folder, ok:false, why:(e.message||'読めません').slice(0,40)}); continue; }
@@ -6012,6 +6212,23 @@ function settingsHtml(){
           <span class="mctl">${awakeSwitch()}
             <button class="qb" onclick="openHelp('awake')" aria-label="説明">?</button></span>
         </div>` : ''}
+      </div>
+      <div class="msec" style="margin-top:16px">写真の読み取り<button class="qb"
+        style="margin-left:7px;vertical-align:-3px" onclick="openHelp('shot')" aria-label="説明">?</button></div>
+      <div class="mlist">
+        <div class="mrow static" style="display:block">
+          <span class="mn">手書きも読めるようにする<i>${visionKey()
+            ? '鍵が入っています。手書きの読み取りを使います'
+            : '鍵を入れると、Google の手書き対応の読み取りに切り替わります'}</i></span>
+          <div class="mypk" style="width:100%;margin-top:8px">
+            <input type="password" id="vkey" placeholder="API キー" value="${esc(visionKey())}"
+              style="flex:1 1 auto;width:auto;min-width:0" autocomplete="off"
+              onkeydown="if(event.key==='Enter'){event.preventDefault();setVisionKey(this.value)}">
+            <button class="act" onclick="setVisionKey(document.getElementById('vkey').value)">入れる</button>
+            ${visionKey() ? '<button class="ghost" onclick="setVisionKey(\'\')">消す</button>' : ''}
+          </div>
+          <p class="hint" style="margin:7px 0 0">鍵はこの端末にだけ置かれ、ほかの端末やクラウドには送られません。</p>
+        </div>
       </div>
       <div class="msec" style="margin-top:16px">曲のデータ</div>
       <div class="mlist">
