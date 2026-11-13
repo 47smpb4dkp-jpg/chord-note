@@ -453,6 +453,25 @@ textarea{min-height:190px;resize:vertical;white-space:pre;overflow-wrap:normal;o
 .stat b{color:var(--accent);font-family:var(--font-mono);font-variant-numeric:tabular-nums}
 .slider{display:flex;align-items:center;gap:10px}
 
+/* 録画中に左下へ出す小さなプレビュー */
+#vidbox{position:fixed;left:12px;z-index:60;display:flex;flex-direction:column;gap:6px;
+  align-items:flex-start;bottom:calc(74px + env(safe-area-inset-bottom,0px))}
+#vidbox video{width:136px;height:auto;max-height:36vh;border-radius:10px;border:2px solid var(--accent);
+  background:#000;display:block;transform:scaleX(-1)}
+#vidbox.min video{display:none}
+#vidbar{display:flex;align-items:center;gap:8px;background:var(--surface);
+  border:1px solid var(--line);border-radius:999px;padding:5px 9px 5px 10px;
+  box-shadow:0 5px 16px rgba(0,0,0,.22);font-size:.74rem;font-family:var(--font-ja);color:var(--fg)}
+#vidbar button{border:0;background:none;font:inherit;font-family:var(--font-ja);
+  color:var(--fg-dim);cursor:pointer;padding:2px 5px;border-radius:6px}
+#vidbar button:hover{color:var(--accent)}
+#vidbar button.stop{color:#c0392b;font-weight:700}
+#vidbar .vt{font-family:var(--font-mono);font-variant-numeric:tabular-nums;color:var(--accent);font-weight:700}
+.recdot{width:9px;height:9px;border-radius:50%;background:#d03a2f;flex:0 0 auto;
+  animation:recblink 1.15s infinite}
+@keyframes recblink{0%,100%{opacity:1}50%{opacity:.2}}
+@media (prefers-reduced-motion:reduce){ .recdot{animation:none} }
+
 /* 曲のメニュー */
 .msec{font-size:.72rem;letter-spacing:.09em;color:var(--fg-dim);font-weight:700;margin:0 0 7px}
 .mlist{display:flex;flex-direction:column;gap:6px}
@@ -463,6 +482,8 @@ textarea{min-height:190px;resize:vertical;white-space:pre;overflow-wrap:normal;o
 .mrow.static{cursor:default}
 .mrow.static:hover{border-color:var(--line)}
 .mrow .mn{flex:1 1 auto;min-width:0;font-size:.9rem;line-height:1.3}
+.mrow .mnb{border:0;background:none;text-align:left;font:inherit;font-family:var(--font-ja);
+  color:var(--fg);cursor:pointer;padding:0;font-size:.9rem}
 .mrow .mn i{font-style:normal;display:block;font-size:.7rem;color:var(--fg-dim);margin-top:2px}
 .mrow .mctl{display:flex;gap:5px;flex:0 0 auto;align-items:center}
 .mrow .mbig{width:32px;height:30px;border:1px solid var(--line);background:var(--surface-2);
@@ -1359,8 +1380,8 @@ function memoBarHtml(){
 let _wake = null;
 function keepAwakeOn(){ return devGet('keepAwake') === '1'; }
 function canKeepAwake(){ return 'wakeLock' in navigator; }
-async function applyWakeLock(){
-  const want = keepAwakeOn() && document.visibilityState === 'visible';
+async function applyWakeLock(force){
+  const want = (force || keepAwakeOn() || !!vidRec) && document.visibilityState === 'visible';
   try{
     if (want && !_wake && canKeepAwake()){
       _wake = await navigator.wakeLock.request('screen');
@@ -1382,8 +1403,8 @@ function toggleKeepAwake(){
   alertShare(keepAwakeOn() ? '画面を消さないようにしました' : '画面は自動で消えます');
 }
 // 画面を一度離れると解除されるので、戻ってきたら取り直す
-document.addEventListener('visibilitychange', applyWakeLock);
-window.addEventListener('focus', applyWakeLock);
+document.addEventListener('visibilitychange', ()=>applyWakeLock());
+window.addEventListener('focus', ()=>applyWakeLock());
 // スイッチの見た目
 function awakeSwitch(){
   if (!canKeepAwake()) return '';
@@ -1446,6 +1467,14 @@ const HELP = {
       パソコンでは行の右端の「⋯」を押しても同じものが出ます。</p>
     <p>楽曲リストの行も同じで、<b>右になぞると「セットリストに追加」</b>、
       <b>左になぞると「削除」</b>です。</p>`],
+  video: ['動画を録る', `
+    <p>譜面を映したまま、<b>前のカメラで自分を録画</b>します。左下に小さくプレビューが出ます。
+      「隠す」を押すと<b>赤い点だけ</b>になり、譜面がまったく隠れません。</p>
+    <p>止めると、そのまま<b>Google ドライブの「${'_動画'}」フォルダへ送ります</b>。
+      端末には残しません（動画は1分で数十MBになるため）。</p>
+    <p>そのため<b>先にドライブにつないでおく必要があります</b>。
+      送れなかったときだけ、取り出せるように手元へ書き出します。</p>
+    <p>録った動画はメニューの「録った動画」から一覧で開けます。</p>`],
   awake: ['画面を消さない', `
     <p>入れておくと、このアプリを開いている間は<b>画面が自動で暗くならず、消えません</b>。
       演奏中に譜面が消えてしまうのを防げます。</p>
@@ -2164,7 +2193,7 @@ const FB_CONFIG = {
 };
 
 // このファイルの版。差し替えたかどうかの目印になる
-const APP_BUILD = 'V261113-12';
+const APP_BUILD = 'V261113-12b';
 
 let fb = null, fbUser = null, fbUnsub = null, syncState = 'off', pushTimer = null;
 let syncPaused = false;   // まとめ消しの最中だけ true。消しかけの状態が戻ってくるのを防ぐ
@@ -2778,6 +2807,33 @@ async function drivePutSong(s, parentId){
     headers: {'Content-Type': 'multipart/related; boundary=' + boundary},
     body: payload
   });
+}
+
+const DRIVE_VID = '_動画';
+
+// 大きなファイルを置く。5MB を超えると普通の方法では送れないので、
+// 置き場所をもらってから本体を送る（resumable）という手順を踏む
+async function driveUploadBlob(name, blob, parentId, props){
+  if (!driveToken) throw new Error('まだドライブにつないでいません');
+  const start = await fetch(
+    'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,name,webViewLink',
+    {method:'POST',
+     headers:{Authorization:'Bearer ' + driveToken, 'Content-Type':'application/json; charset=UTF-8',
+              'X-Upload-Content-Type': blob.type || 'application/octet-stream',
+              'X-Upload-Content-Length': String(blob.size)},
+     body: JSON.stringify({name, parents:[parentId], appProperties: props || {}})});
+  if (start.status === 401 || start.status === 403){
+    rememberDriveToken(null); driveState = 'error';
+    driveError = 'つなぎ直しが要ります（鍵の期限切れ）';
+    throw new Error('EXPIRED');
+  }
+  if (!start.ok) throw new Error('置き場所をもらえませんでした（' + start.status + '）');
+  const to = start.headers.get('Location');
+  if (!to) throw new Error('置き場所が返ってきませんでした');
+  const put = await fetch(to, {method:'PUT',
+    headers:{'Content-Type': blob.type || 'application/octet-stream'}, body: blob});
+  if (!put.ok) throw new Error('送りきれませんでした（' + put.status + '）');
+  return put.json();
 }
 
 const DRIVE_OLD = '_ふるい';
@@ -6123,14 +6179,172 @@ function toggleSpeedCard(){
   }
 }
 
+/* ---- 動画で録る。撮ったらすぐドライブへ上げて、端末には残さない ---- */
+let vidRec = null, vidChunks = [], vidStream = null, vidTimer = null,
+    vidStart = 0, vidSongId = null, vidMin = false, vidBusy = false;
+
+function vidMime(){
+  const list = ['video/mp4;codecs=avc1,mp4a.40.2', 'video/mp4',
+                'video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'];
+  if (!window.MediaRecorder || !MediaRecorder.isTypeSupported) return '';
+  for (const m of list) if (MediaRecorder.isTypeSupported(m)) return m;
+  return '';
+}
+function canVideo(){
+  return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
+}
+function vidExt(type){ return /mp4/.test(type || '') ? 'mp4' : 'webm'; }
+
+function vidClock(){
+  const sec = Math.floor((Date.now() - vidStart) / 1000);
+  return String(Math.floor(sec/60)).padStart(2,'0') + ':' + String(sec%60).padStart(2,'0');
+}
+function drawVidBox(msg){
+  let box = document.getElementById('vidbox');
+  if (!vidRec && !vidBusy){ if (box) box.remove(); return; }
+  if (!box){
+    box = document.createElement('div');
+    box.id = 'vidbox';
+    box.innerHTML = `<video id="vidPrev" autoplay playsinline muted></video>
+      <div id="vidbar">
+        <span class="recdot"></span><span class="vt" id="vidTime">00:00</span>
+        <button id="vidEye" onclick="vidToggleEye()">隠す</button>
+        <button class="stop" onclick="stopVideo()">停止</button>
+      </div>`;
+    document.body.appendChild(box);
+    const v = box.querySelector('#vidPrev');
+    if (vidStream) v.srcObject = vidStream;
+  }
+  box.classList.toggle('min', vidMin);
+  const eye = document.getElementById('vidEye');
+  if (eye) eye.textContent = vidMin ? '出す' : '隠す';
+  const t = document.getElementById('vidTime');
+  if (t) t.textContent = msg || vidClock();
+  if (msg){
+    const st = box.querySelector('.stop'); if (st) st.remove();
+    const ey = box.querySelector('#vidEye'); if (ey) ey.remove();
+  }
+}
+function vidToggleEye(){ vidMin = !vidMin; drawVidBox(); }
+
+async function startVideo(id){
+  if (vidRec || vidBusy) return;
+  if (!canVideo()){ alertShare('この端末では動画を録れません'); return; }
+  if (driveState !== 'on'){
+    alertShare('先に Google ドライブにつないでください（動画はドライブに置きます）');
+    return;
+  }
+  const mt = vidMime();
+  try{
+    vidStream = await navigator.mediaDevices.getUserMedia({
+      video: {facingMode:'user', width:{ideal:1280}, height:{ideal:720}, frameRate:{ideal:30}},
+      audio: {echoCancellation:false, noiseSuppression:false, autoGainControl:false}});
+  }catch(e){
+    alertShare('カメラを使えませんでした。ブラウザの許可を確かめてください');
+    return;
+  }
+  vidSongId = id;
+  vidChunks = [];
+  try{
+    vidRec = new MediaRecorder(vidStream, Object.assign({videoBitsPerSecond: 2500000},
+      mt ? {mimeType: mt} : {}));
+  }catch(e){
+    try{ vidRec = new MediaRecorder(vidStream); }
+    catch(e2){ vidStopStream(); alertShare('この端末では動画を録れません'); return; }
+  }
+  vidRec.ondataavailable = e=>{ if (e.data && e.data.size) vidChunks.push(e.data); };
+  vidRec.onstop = vidFinish;
+  vidRec.start(1000);
+  vidStart = Date.now();
+  vidTimer = setInterval(()=>drawVidBox(), 500);
+  applyWakeLock(true);   // 録っている間は画面を消さない
+  drawVidBox();
+}
+function stopVideo(){
+  if (vidRec && vidRec.state !== 'inactive') vidRec.stop();
+}
+function vidStopStream(){
+  if (vidStream){ vidStream.getTracks().forEach(t=>t.stop()); vidStream = null; }
+}
+async function vidFinish(){
+  clearInterval(vidTimer);
+  const type = (vidRec && vidRec.mimeType) || 'video/webm';
+  const blob = new Blob(vidChunks, {type});
+  vidChunks = [];
+  vidRec = null;
+  vidStopStream();
+  const prev = document.getElementById('vidPrev');
+  if (prev) prev.srcObject = null;
+  vidBusy = true;
+  drawVidBox('送っています…');
+  const song = songs.find(x=>x.id===vidSongId);
+  const stamp = new Date();
+  const two = n=>String(n).padStart(2,'0');
+  const name = (song ? exportFileName(song) : '動画') + '_' +
+    String(stamp.getFullYear()).slice(2) + two(stamp.getMonth()+1) + two(stamp.getDate()) + '-' +
+    two(stamp.getHours()) + two(stamp.getMinutes()) + '.' + vidExt(type);
+  try{
+    const root = await driveFindRoot();
+    const folder = await driveFolder(DRIVE_VID, root);
+    const up = await driveUploadBlob(name, blob, folder, song ? {[CN_TAG]: song.id} : {});
+    if (song){
+      song.videos = (song.videos || []).concat([{id: up.id, name, at: stamp.toISOString(),
+        mb: Math.round(blob.size / 1048576 * 10) / 10}]);
+      persist();
+    }
+    vidBusy = false;
+    drawVidBox();
+    alertShare('ドライブの「' + DRIVE_VID + '」に置きました（' +
+      Math.round(blob.size/1048576*10)/10 + 'MB）。端末には残していません');
+    render();
+  }catch(e){
+    vidBusy = false;
+    drawVidBox();
+    // 送れなかったときだけ、取り出せるように手元へ落とす
+    try{
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = name;
+      a.click();
+      setTimeout(()=>URL.revokeObjectURL(a.href), 20000);
+      alertShare('ドライブに送れませんでした（' + e.message + '）。手元に書き出しました');
+    }catch(e2){
+      alertShare('ドライブに送れませんでした: ' + e.message);
+    }
+  }
+  applyWakeLock();
+}
+function openVideoList(id){
+  const s = songs.find(x=>x.id===id); if (!s) return;
+  const vs = (s.videos || []).slice().reverse();
+  popPick('この曲の動画', vs.length ? 'ドライブの「' + DRIVE_VID + '」にあります。' : '',
+    vs.length
+      ? `<div class="mlist">${vs.map((v,i)=>`<div class="mrow static">
+          <span class="mn">${esc(v.name)}<i>${new Date(v.at).toLocaleString('ja-JP')}${v.mb?' · '+v.mb+'MB':''}</i></span>
+          <span class="mctl">
+            <a class="mini" href="https://drive.google.com/file/d/${esc(v.id)}/view" target="_blank" rel="noopener">開く</a>
+            <button class="mini" onclick="dropVideo('${esc(s.id)}',${vs.length-1-i})">記録を消す</button></span>
+        </div>`).join('')}</div>
+        <p class="hint">「記録を消す」はこの一覧から外すだけで、ドライブのファイルは残ります。</p>`
+      : `<p class="hint" style="margin:0">まだありません。メニューの「動画を録る」から録れます。</p>`);
+}
+function dropVideo(id, i){
+  const s = songs.find(x=>x.id===id); if (!s || !s.videos) return;
+  s.videos.splice(i, 1);
+  if (!s.videos.length) delete s.videos;
+  persist();
+  openVideoList(id);
+}
+
 /* ---- この曲のメニュー（設定ごと一覧にまとめる） ---- */
 function openSongMenu(){
   const s = songs.find(x=>x.id===openSong); if (!s) return;
   const sz = sheetSizeOf(s);
   const ctr = sheetAlignOf(s) === 'center';
-  const row = (act, name, note, cls) =>
-    `<button class="mrow${cls?' '+cls:''}" onclick="${act}">
-       <span class="mn">${name}<i>${note}</i></span></button>`;
+  // help を渡すと、その行の右に「?」が付く
+  const row = (act, name, note, help) =>
+    `<div class="mrow"><button class="mn mnb" onclick="${act}">${name}<i>${note}</i></button>${
+      help ? `<button class="qb" onclick="openHelp('${help}')" aria-label="${name}の説明">?</button>` : ''}</div>`;
   document.getElementById('popName').textContent = 'この曲のメニュー';
   document.getElementById('popDesc').textContent = s.title || '';
   document.getElementById('popGrid').innerHTML = `<div style="flex:1 1 100%">
@@ -6151,7 +6365,13 @@ function openSongMenu(){
     <div class="msec" style="margin-top:14px">この曲<button class="qb" style="margin-left:7px;vertical-align:-3px"
       onclick="openHelp('audio')" aria-label="説明">?</button></div>
     <div class="mlist">
-      ${row("closePop();toggleAudioCard()", '♪ 音源', s.hasAudio ? '付いています。開いて聴く・録り直す' : '録音する・ファイルから貼る')}
+      ${row("closePop();toggleAudioCard()", '♪ 音源',
+          s.hasAudio ? '付いています。開いて聴く・録り直す' : '録音する・ファイルから貼る', 'audio')}
+      ${canVideo() ? row("closePop();startVideo('"+s.id+"')", '● 動画を録る',
+          vidRec ? 'いま録っています' : '譜面を見ながら。撮ったらドライブへ', 'video') : ''}
+      ${(s.videos && s.videos.length)
+          ? row("closePop();openVideoList('"+s.id+"')", '録った動画', s.videos.length + ' 本 · ドライブで見る')
+          : ''}
       ${row("closePop();editSong('"+s.id+"')", '編集', '譜面・キー・カポ・ジャンルを直す')}
       ${row("closePop();choosePlaylist(['"+s.id+"'])", 'セットリストに追加', 'どのリストに入れるか選ぶ')}
       ${row("closePop();exportSong('"+s.id+"')", '書き出し', '.md ファイルとして取り出す')}
