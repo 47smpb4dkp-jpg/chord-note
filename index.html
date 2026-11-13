@@ -1437,7 +1437,7 @@ const HELP = {
   speed: ['速さとメトロノーム', `
     <p>このアプリの譜面は歌詞カードなので、1行が何小節ぶんかは行ごとにまちまちです。
       そのため<b>スクロールの速さと BPM は切り離してあります</b>。</p>
-    <p><b>自動スクロール</b>…0〜100% で自分で決めます。100% で1秒に1行、25% なら4秒に1行です。
+    <p><b>自動スクロール</b>…0〜100% で自分で決めます。100% で2秒に1行、50% なら4秒に1行です。
       文字の大きさを変えても見え方は同じになります。
       流しながら ＋ − を押せば、走ったまま微調整できます。</p>
     <p><b>メトロノーム</b>…BPM どおりにクリックが鳴ります。拍子の1拍目だけ高い音です。
@@ -2213,7 +2213,7 @@ const FB_CONFIG = {
 };
 
 // このファイルの版。差し替えたかどうかの目印になる
-const APP_BUILD = 'V261113-14b';
+const APP_BUILD = 'V261113-14c';
 
 let fb = null, fbUser = null, fbUnsub = null, syncState = 'off', pushTimer = null;
 let syncPaused = false;   // まとめ消しの最中だけ true。消しかけの状態が戻ってくるのを防ぐ
@@ -4370,15 +4370,16 @@ function drawSpeedNote(){
 }
 function toggleScroll(){ scrolling ? stopScroll() : startScroll(); }
 // 自動スクロールの速さ（%）。BPM とは別もの。
-// 100% で「1秒に1行」。25% なら「4秒に1行」。文字を大きくしても同じ見え方になる
-const SCROLL_PCT_DEF = 25;
+// 100% で「2秒に1行」。50% なら「4秒に1行」。文字を大きくしても同じ見え方になる
+const SCROLL_FULL_SEC = 2;
+const SCROLL_PCT_DEF = 50;
 function scrollPctOf(s){
   const n = s && parseInt(s.scrollPct, 10);
   if (n && n >= 1) return Math.min(100, n);
   const d = parseInt(devGet('scrollPct'), 10);
   return (d && d >= 1) ? Math.min(100, d) : SCROLL_PCT_DEF;
 }
-function secPerLineOf(s){ return 100 / scrollPctOf(s); }
+function secPerLineOf(s){ return SCROLL_FULL_SEC * 100 / scrollPctOf(s); }
 // 譜面1行ぶんの高さ。実際に出ている行から測る
 function sheetRowH(){
   const sheet = document.getElementById('sheet');
@@ -4392,7 +4393,7 @@ function sheetRowH(){
 // いまの設定だと1秒に何ピクセル送るか
 function scrollPxPerSec(s){
   const rowH = sheetRowH() || 46;
-  return rowH * scrollPctOf(s) / 100;
+  return rowH / secPerLineOf(s);
 }
 function startScroll(){
   const s=songs.find(x=>x.id===openSong); if(!s) return;
