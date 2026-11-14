@@ -2448,7 +2448,7 @@ const FB_CONFIG = {
 };
 
 // このファイルの版。差し替えたかどうかの目印になる
-const APP_BUILD = 'V261114-12';
+const APP_BUILD = 'V261114-12b';
 
 let fb = null, fbUser = null, fbUnsub = null, syncState = 'off', pushTimer = null;
 let syncPaused = false;   // まとめ消しの最中だけ true。消しかけの状態が戻ってくるのを防ぐ
@@ -2556,21 +2556,45 @@ function startSync(){
   if (fbUnsub) fbUnsub();
   fbUnsub = songsCol().onSnapshot(snap=>{
     if (syncPaused) return;                       // まとめ消しの途中は受け取らない
-    if (snap.metadata.hasPendingWrites) return;   // 自分が書いた分の返りは無視
-    const remote = snap.docs.map(d=>({...d.data(), id:d.id}));
-    if (!remote.length && songs.length){
+
+    // 以前は「自分の送信待ちがあるうちは、届いたものをまるごと無視」していた。
+    // 1曲でも送れずに詰まると、ほかの端末で作った曲がいつまでも降りてこなくなるため、
+    // 曲ごとに「送信待ちは手元を残す／それ以外は届いたものを採る」と分ける
+    const keep = new Map(songs.map(x=>[x.id, x]));
+    const next = [];
+    let waiting = 0;
+    snap.docs.forEach(d=>{
+      const mine = keep.get(d.id);
+      // 送信待ち、または「送った内容と手元が食い違う＝まだ送っていない直しがある」曲
+      const dirty = mine && pushed.has(d.id) && pushed.get(d.id) !== snapOf(mine);
+      if (d.metadata.hasPendingWrites || dirty){
+        waiting++;
+        if (mine){ next.push(mine); return; }     // 手元のほうが新しい
+      }
+      const r = {...d.data(), id: d.id};
+      if (mine){
+        // 端末だけで持っている項目（開いた回数・音源の有無）は残す
+        LOCAL_ONLY.forEach(k=>{ if (mine[k] !== undefined) r[k] = mine[k]; });
+      }
+      next.push(r);
+    });
+    // まだ一度も上げていない曲は、届いた一覧に入っていなくても手元に残す
+    const seen = new Set(snap.docs.map(d=>d.id));
+    songs.forEach(x=>{ if (!seen.has(x.id) && !pushed.has(x.id)) next.push(x); });
+
+    pendingWrites = waiting;
+    if (!snap.docs.length && songs.length){
       pushAll();                                   // 初回: 手元の曲を上げる
     } else {
-      // 端末だけで持っている項目（開いた回数・音源の有無）は残す
-      const keep = new Map(songs.map(x=>[x.id, x]));
-      songs = remote.map(r=>{
-        const old = keep.get(r.id);
-        if (!old) return r;
-        const mine = {};
-        LOCAL_ONLY.forEach(k=>{ if (old[k] !== undefined) mine[k] = old[k]; });
-        return {...r, ...mine};
+      songs = next;
+      // 送れた曲だけ「送信済み」に数える（詰まっている曲は送り直しの対象に残す）
+      const mark = new Map();
+      snap.docs.forEach(d=>{
+        if (d.metadata.hasPendingWrites) return;
+        const x = songs.find(y=>y.id === d.id);
+        if (x) mark.set(d.id, snapOf(x));
       });
-      markPushed(songs);
+      pushed = mark;
       if (migrateSongs()) schedulePush();
       try{ localStorage.setItem('cn_songs', JSON.stringify(songs)); }catch(e){}
     }
@@ -2590,11 +2614,12 @@ async function pushAll(){
   if (!fb || !fbUser) return;
   const batch = fb.batch();
   songs.forEach(s=>{
-    const {id, ...rest} = s;
-    batch.set(songsCol().doc(id), rest, {merge:false});
+    batch.set(songsCol().doc(s.id), forCloud(s), {merge:false});
   });
   try{ await batch.commit(); markPushed(songs); }catch(e){ showSyncError(e, '初回アップロード'); }
 }
+
+let pendingWrites = 0;    // まだ送りきれていない曲の数。詰まっていれば帯に出す
 
 // 送信済みの内容を覚えておき、変わった曲だけ書き込む
 let pushed = new Map();   // id -> JSON文字列
@@ -2686,7 +2711,8 @@ function renderSyncBar(){
         <button class="mini" onclick="copyErr()">この内容をコピー</button></div>`
     : '';
   if (fbUser){
-    el.innerHTML = `<span class="sdot ${syncState==='on'?'ok':'wait'}"></span>${label}
+    el.innerHTML = `<span class="sdot ${syncState==='on'?'ok':'wait'}"></span>${label}${
+        pendingWrites ? `<span class="who">送信待ち ${pendingWrites} 件</span>` : ''}
       <span class="who">${esc(fbUser.email||'')}</span>
       <button class="mini" onclick="signOutSync()">やめる</button>` + errBox;
   } else {
@@ -2906,7 +2932,20 @@ let driveState  = 'off';        // off / on / error
 let driveError  = '';
 let driveBusy   = false;
 let driveTimer  = null;
-let drivePushed = new Map();    // 書き出し済みの内容。変わった曲だけ送る
+// 書き出し済みの内容。変わった曲だけ送る。
+// 端末に残しておかないと、開き直すたびに全曲を送り直すことになる
+let drivePushed = loadDrivePushed();
+function loadDrivePushed(){
+  try{
+    const o = JSON.parse(localStorage.getItem('cn_drivepushed') || '{}');
+    return new Map(Object.entries(o));
+  }catch(e){ return new Map(); }
+}
+function saveDrivePushed(){
+  try{
+    localStorage.setItem('cn_drivepushed', JSON.stringify(Object.fromEntries(drivePushed)));
+  }catch(e){}
+}
 
 function driveWanted(){
   try{ return localStorage.getItem('cn_drive') === 'on'; }catch(e){ return false; }
@@ -2939,7 +2978,7 @@ async function connectDrive(){
     await driveFindRoot();
     alertShare('ドライブにつながりました');
     drawDrive();
-    scheduleDriveBackup(true);
+    scheduleDriveBackup(false);   // 変わった曲だけ。全曲の送り直しは「整理し直す」から
   }catch(e){
     driveState = 'error';
     driveError = ((e && (e.code || e.name)) || '') + ' ' + ((e && e.message) || String(e));
@@ -2951,6 +2990,7 @@ function disconnectDrive(){
   rememberDriveToken(null);
   driveState = 'off'; driveError = ''; driveRootId = null;
   drivePushed = new Map();
+  saveDrivePushed();
   alertShare('ドライブとの連携をやめました');
   drawDrive();
 }
@@ -3233,6 +3273,10 @@ async function runDriveBackup(all){
       driveError = (e && e.message) || String(e);
     }
   }
+  // 消えた曲のぶんは覚えておく必要がないので落とす
+  const alive = new Set(songs.map(x=>x.id));
+  [...drivePushed.keys()].forEach(id=>{ if (!alive.has(id)) drivePushed.delete(id); });
+  saveDrivePushed();
   driveBusy = false;
   driveProg = {i:0, n:0};
   drawDrive();
@@ -3331,7 +3375,8 @@ function drawDrive(){
       ジャンルごとに曲を <b>.md</b> で置いていきます。ドライブのほかの中身は見ません。
       普段の同期は今までどおり Firebase が担当し、ドライブは<b>自分で中身を見られるバックアップ</b>です。<br>
       曲名やジャンルを変えると、<b>ドライブ側も名前を変えて移します</b>（作り直しません）。
-      ドライブの後始末は「読み込み済みの曲を整理し直す」でまとめて行います。</p>
+      送るのは<b>新しく作った曲と、直した曲だけ</b>です。
+      全曲の送り直しと後始末は「設定 → 読み込み済みの曲を整理し直す」から行います。</p>
     <div class="btnrow">
       ${on
         ? `<button class="ghost" onclick="driveRestore()" ${driveBusy?'disabled':''}>ドライブから読み戻す</button>
