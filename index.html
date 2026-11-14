@@ -1325,26 +1325,31 @@ function capoBtnLabel(s){
   const play = shiftKey(shiftKey(s.key, s.transpose||0), -n);
   return (n===0 ? 'カポなし' : 'カポ ' + n) + `<i>${esc(play||'—')} で押さえる</i>`;
 }
-function accLabel(s){
-  return s.acc === 'flat' ? '♭ で書く' : s.acc === 'sharp' ? '♯ で書く' : 'キーに合わせる';
+function baseBtnLabel(s){
+  return capoBaseOf(s) === 'play'
+    ? 'カポを付けて押さえる形<i>押すと切り替え</i>'
+    : 'カポなしの鳴る音<i>押すと切り替え</i>';
+}
+// ワンタップで「押さえる形 ⇄ 鳴る音」を行き来する。譜面の文字は動かさない
+function toggleCapoBase(){
+  const s = curEdit(); if (!s) return;
+  setCapoBase(capoBaseOf(s) === 'play' ? 'sound' : 'play');
 }
 function keyBtnLabel(s){
   const k = String(s.key||'').trim();
   return (k || '指定なし') + '<i>鳴る音のキー</i>';
 }
 function keyNoteHtml(s){
-  const sound = shiftKey(s.key, s.transpose || 0);
-  const play  = shiftKey(sound, -(s.capo || 0));
-  const playMode = capoBaseOf(s) === 'play';
-  return `<div class="picker" style="gap:6px">
-      <button class="pk sub${playMode?' on':''}" onclick="setCapoBase('play')">譜面はカポを付けて押さえる形</button>
-      <button class="pk sub${!playMode?' on':''}" onclick="setCapoBase('sound')">譜面はカポなしの鳴る音</button>
-    </div>
-    <p class="sub" style="margin:7px 0 0"><b>${esc(sound||'—')}</b> で鳴る曲。カポ ${s.capo||0} なら押さえるのは
-      <b>${esc(play||'—')}</b>。${playMode
-        ? 'この譜面は、その押さえる形で書いてあるものとして扱います。'
-        : 'この譜面は、カポなしの鳴る音で書いてあるものとして扱います。'}
-      <b>どちらを選んでも、ここで譜面の文字は動きません。</b></p>`;
+  const sound   = shiftKey(s.key, s.transpose || 0);
+  const target  = shiftKey(sound, -(s.capo || 0));
+  const written = writtenKeyOf(s);
+  const off = !!(s.key && written && !sameKeyName(written, target));
+  return `<p class="sub" style="margin:7px 0 0">
+      <b>${esc(sound||'—')}</b> で鳴る曲。カポ ${s.capo||0} なら押さえるのは <b>${esc(target||'—')}</b>。
+      譜面は <b>${esc(written||'—')}</b> で書いてあります。${off
+        ? ` <b style="color:#c0392b">食い違っています。</b>
+            <button class="mini" onclick="openEditKeyPick()">合わせる</button>`
+        : ''}</p>`;
 }
 // 情報欄（ジャンル／BPM／キー／カポ／♯♭）。曲の編集と新規登録で共通
 function editInfoRow(s){
@@ -1356,8 +1361,8 @@ function editInfoRow(s){
         <button class="pkbig" id="genreBtn" onclick="openGenrePick()">${esc(genreLabel(s))}</button></div>
       <div class="field"><label>カポ</label>
         <button class="pkbig" id="capoBtn" onclick="openEditCapoPick()">${capoBtnLabel(s)}</button></div>
-      <div class="field"><label>♯ / ♭</label>
-        <button class="pkbig" id="accBtn" onclick="cycleAcc()">${esc(accLabel(s))}</button></div>
+      <div class="field"><label>譜面の音</label>
+        <button class="pkbig" id="baseBtn" onclick="toggleCapoBase()">${baseBtnLabel(s)}</button></div>
     </div>
     <div id="keyNote">${keyNoteHtml(s)}</div>`;
 }
@@ -1368,7 +1373,7 @@ function refreshKeyRow(){
   set('genreBtn', esc(genreLabel(s)));
   set('keyBtn',   keyBtnLabel(s));
   set('capoBtn',  capoBtnLabel(s));
-  set('accBtn',   esc(accLabel(s)));
+  set('baseBtn',  baseBtnLabel(s));
   set('keyNote',  keyNoteHtml(s));
   drawPalette();
   if (editing) livePreview(); else previewDraft();
@@ -1470,6 +1475,19 @@ const HELP = {
     <p>この2つは<b>その曲に保存</b >され、同時に<b>この端末の既定</b>としても覚えます。
       まだ個別に決めていない曲は、その既定の大きさ・ぞろえで開きます。</p>`],
   keycapo: ['キーとカポ', `
+    <p><b>決まりはこの3つです。</b></p>
+    <p>1. <b>原曲キー</b>…この曲がカポなしで何の音で鳴るかの<b>覚え書き</b>です。
+      選び直しても、譜面の文字もカポも動きません。</p>
+    <p>2. <b>カポ</b>…選ぶと<b>譜面のコードをその押さえ方に書き換えます</b>。
+      カポは鳴る音を変えずに押さえ方を変えるものなので、原曲キーは動きません。
+      （「譜面の音」を「カポなしの鳴る音」にしているときは書き換えません）</p>
+    <p>3. <b>譜面を原曲キーに合わせる</b>…原曲キーを選ぶ画面の下にあるボタンです。
+      <b>押したときだけ</b>、譜面のコードを原曲キーとカポから決まるキーへ移調します。</p>
+    <p>読み込んだ譜面がすでにカポ付きのコードで書いてあるときは、
+      原曲キーに本当のキーを、カポに譜面のカポを入れるだけで合います。ボタンは押さなくて構いません。</p>
+    <p><b>譜面の音</b>…その譜面が「カポを付けて押さえる形」で書いてあるのか、
+      「カポなしの鳴る音」で書いてあるのかの指定です。押すたびに切り替わります。</p>`],
+  keycapo_old: ['キーとカポ', `
     <p>この2つは<b>「この譜面が何か」を書き留めておく欄</b>です。
       選び直しても<b>譜面の文字は動きません</b>。</p>
     <p><b>原曲キー</b>…カポを付けずに鳴っている音のキーです。カポをどう動かしても変わりません。</p>
@@ -1596,15 +1614,65 @@ function setEditGenre(v){
 }
 function openEditKeyPick(){
   const s = curEdit(); if (!s) return;
-  const same = (a,b) => normTok(String(a||'')).toLowerCase() === normTok(String(b||'')).toLowerCase();
-  const chip = k => `<button class="pk${same(k, s.key)?' on':''}" onclick="setEditKey('${k}')">${k}</button>`;
+  const flat = s.acc === 'flat';
+  const chip = k => `<button class="pk${sameKeyName(k, s.key)?' on':''}"
+    onclick="setEditKey('${k}')">${k}</button>`;
+  const written = writtenKeyOf(s);
+  const target  = shiftKey(shiftKey(s.key, s.transpose || 0), -(s.capo || 0));
+  const needs   = !!(s.key && written && !sameKeyName(written, target));
   popPick('原曲キーを選ぶ',
-    'カポを付けずに鳴っている音のキーです。選ぶと、譜面に書いてあるキーとの差からカポを決めます。譜面の文字は動きません。',
-    `<div class="picker kp">
-      <span class="kprow"><i>メジャー</i>${KEY_MAJOR.map(chip).join('')}</span>
-      <span class="kprow"><i>マイナー</i>${KEY_MINOR.map(chip).join('')}</span>
+    'カポを付けずに鳴っている音のキーです。選んでも、譜面の文字とカポは動きません。',
+    `<div class="picker" style="gap:6px;margin-bottom:4px">
+      <button class="pk sub${flat?'':' on'}"  onclick="setKeySpell('sharp')">♯ で表示</button>
+      <button class="pk sub${flat?' on':''}" onclick="setKeySpell('flat')">♭ で表示</button>
+    </div>
+    <p class="hint" style="margin:0 0 10px">譜面のコードの書き方も、ここで一緒に切り替わります（A♯ ⇄ B♭）。</p>
+    <div class="picker kp">
+      <span class="kprow"><i>メジャー</i>${keyList(flat, false).map(chip).join('')}</span>
+      <span class="kprow"><i>マイナー</i>${keyList(flat, true).map(chip).join('')}</span>
       <span class="kprow"><button class="pk sub${String(s.key||'').trim()?'':' on'}" onclick="setEditKey('')">指定なし</button></span>
+    </div>
+    <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--line)">
+      <p class="sub" style="margin:0 0 8px">譜面は <b>${esc(written || '—')}</b> で書いてあります。
+        ${s.key ? `原曲キー <b>${esc(s.key)}</b>・カポ ${s.capo||0} なら、譜面は <b>${esc(target||'—')}</b> のはずです。` : ''}
+        ${needs ? '<br><b>食い違っています。</b>譜面の文字を合わせるなら、下を押してください。'
+                : (s.key ? '<br>合っています。' : '')}</p>
+      <button class="${needs?'act':'ghost'}" onclick="applyKeyToSheet()"
+        ${s.key && written ? '' : 'disabled'}>譜面を原曲キーに合わせる（移調する）</button>
+      <p class="hint" style="margin:7px 0 0">押すと、譜面のコードを <b>${esc(target||'—')}</b> に書き換えます。
+        押さないかぎり譜面は動きません。</p>
     </div>`);
+}
+// 一覧の ♯／♭ の出し方を決める。譜面の書き方の設定と同じものを使う
+function setKeySpell(v){
+  const s = curEdit(); if (!s) return;
+  if (v === 'flat') s.acc = 'flat'; else s.acc = 'sharp';
+  const ta = curEditText();
+  if (ta){
+    const pos = ta.selectionStart;
+    ta.value = respellText(ta.value, v === 'flat');
+    if (s === draft) draft.text = ta.value;
+    try{ ta.setSelectionRange(pos, pos); }catch(e){}
+  }
+  openEditKeyPick();
+  redrawKeyCard();
+}
+// 原曲キーとカポから決まる「譜面に書かれるべきキー」へ、譜面を移調する
+function applyKeyToSheet(){
+  const s = curEdit(); if (!s) return;
+  const ta = curEditText(); if (!ta) return;
+  const written = writtenKeyOf(s);
+  const target  = shiftKey(shiftKey(s.key, s.transpose || 0), -(s.capo || 0));
+  if (!written || !target){ alertShare('譜面のキーが読み取れませんでした'); return; }
+  const n = capoFromKeys(target, written);      // written を n 上げると target
+  if (n == null){ alertShare('長調と短調が食い違っています'); return; }
+  if (n === 0){ closePop(); alertShare('すでに合っています'); return; }
+  const up = n > 6 ? n - 12 : n;                // 近いほうへ寄せる
+  ta.value = retuneText(ta.value, up, s.acc === 'flat');
+  if (s === draft) draft.text = ta.value;
+  closePop();
+  redrawKeyCard();
+  alertShare('譜面を ' + written + ' から ' + target + ' に移しました');
 }
 function openEditCapoPick(){
   const s = curEdit(); if (!s) return;
@@ -1614,31 +1682,16 @@ function openEditCapoPick(){
     return `<button class="pk${n===(s.capo||0)?' on':''}${isEasyKey(pl)?' easy':''}"
       onclick="setEditCapo(${n})">${n===0?'なし':n}<i>${esc(pl||'')}</i></button>`;
   };
-  popPick('カポを選ぶ', 'この譜面がカポいくつで書いてあるかを記録します。譜面の文字は触りません。',
+  const playMode = capoBaseOf(s) === 'play';
+  popPick('カポを選ぶ',
+    playMode ? '選ぶと、譜面のコードもその押さえ方に書き換えます。鳴る音は変わりません。'
+             : 'この譜面はカポなしの鳴る音で書いてあるので、譜面の文字は動きません。',
     `<div class="picker kp"><span class="kprow">${[0,1,2,3,4,5,6,7,8,9,10,11,12].map(chip).join('')}</span></div>
-     <label class="brow" style="margin-top:12px">
-       <input type="checkbox" ${capoRetune?'checked':''} onchange="capoRetune=this.checked;openEditCapoPick()">
-       <span class="bn">選んだら、譜面のコードも書き換える
-         <div class="bf">いま書いてある形から、そのカポで押さえる形へ移調します。
-           読み込んだばかりの譜面では<b>付けないでください</b></div></span>
-     </label>
-     <p class="hint">下に出ているのは、そのカポで押さえるキーです。枠の色が付いているのが押さえやすい形です。</p>`);
+     <p class="hint">下に出ているのは、そのカポで押さえるキーです。枠の色が付いているのが押さえやすい形です。<br>
+       ${playMode
+         ? '譜面の文字を動かしたくないときは、先に「譜面の音」を<b>カポなしの鳴る音</b>に切り替えてください。'
+         : '譜面の文字も一緒に動かしたいときは、「譜面の音」を<b>カポを付けて押さえる形</b>にしてください。'}</p>`);
 }
-// ♯ と ♭ の書き方を切り替える。譜面の文字も書き換える
-function cycleAcc(){
-  const s = curEdit(); if (!s) return;
-  const next = s.acc === 'sharp' ? 'flat' : s.acc === 'flat' ? '' : 'sharp';
-  if (next) s.acc = next; else delete s.acc;
-  const ta = curEditText();
-  if (ta && next){
-    const pos = ta.selectionStart;
-    ta.value = respellText(ta.value, next === 'flat');
-    if (editing){ /* 保存時に拾う */ } else { draft.text = ta.value; }
-    try{ ta.setSelectionRange(pos, pos); }catch(e){}
-  }
-  refreshKeyRow();
-}
-
 // キーを選ぶ（鳴る音のキー。コード譜の文字は動かさない）
 // いま譜面の文字に書かれているキー（＝押さえる形のキー）を見る
 function writtenKeyOf(s){
@@ -1661,33 +1714,22 @@ function capoFromKeys(sound, written){
   if (i < 0 || j < 0) return null;
   return ((i - j) % 12 + 12) % 12;
 }
+// 原曲キーは「この曲が何で鳴るか」の覚え書き。譜面もカポも動かさない
 function setEditKey(k){
   const s = curEdit(); if (!s) return;
   s.key = k;
   s.keyEdited = true; s.keyGuessed = false;
-  // 譜面が押さえる形で書いてあるなら、カポはここから決まる（文字は触らない）
-  let told = '';
-  if (k && capoBaseOf(s) === 'play'){
-    const w = writtenKeyOf(s);
-    const n = capoFromKeys(k, w);
-    if (n != null && n !== (parseInt(s.capo,10) || 0)){
-      s.capo = n; s.textCapo = n;
-      told = `譜面は ${w} で書かれているので、カポを ${n === 0 ? 'なし' : n} にしました。`;
-    }
-  }
   closePop();
   redrawKeyCard();
-  if (told) alertShare(told);
 }
 
-// カポを選ぶ。ふだんは「この譜面はカポ○で書いてある」と書き留めるだけで、
-// 譜面の文字には触らない。書き換えたいときだけ、選ぶ画面で印を付けてもらう
-let capoRetune = false;
+// カポを選ぶ。鳴る音は変えずに押さえ方を変えるものなので、
+// 「押さえる形で書いてある」譜面では、コードの文字も必ず書き換える
 function setEditCapo(n){
   const s = curEdit(); if (!s) return;
   const ta = curEditText();
   const from = parseInt(s.capo, 10) || 0, to = Math.max(0, Math.min(12, n));
-  if (capoRetune && ta && capoBaseOf(s) === 'play' && from !== to){
+  if (ta && capoBaseOf(s) === 'play' && from !== to){
     const sound = shiftKey(s.key, s.transpose || 0);
     const pref = s.acc === 'flat' ? true : s.acc === 'sharp' ? false
                : keyPrefersFlat(shiftKey(sound, -to));
@@ -2448,7 +2490,7 @@ const FB_CONFIG = {
 };
 
 // このファイルの版。差し替えたかどうかの目印になる
-const APP_BUILD = 'V261114-12b';
+const APP_BUILD = 'V261115-07';
 
 let fb = null, fbUser = null, fbUnsub = null, syncState = 'off', pushTimer = null;
 let syncPaused = false;   // まとめ消しの最中だけ true。消しかけの状態が戻ってくるのを防ぐ
@@ -6247,8 +6289,14 @@ function importBatch(){
 }
 
 /* ---- 原曲キーとカポをボタンで選ぶ ---- */
-const KEY_MAJOR = ['C','D♭','D','E♭','E','F','F#','G','A♭','A','B♭','B'];
-const KEY_MINOR = ['Am','B♭m','Bm','Cm','C#m','Dm','E♭m','Em','Fm','F#m','Gm','G#m'];
+const KEY_SHARP = ['C','C♯','D','D♯','E','F','F♯','G','G♯','A','A♯','B'];
+const KEY_FLAT  = ['C','D♭','D','E♭','E','F','G♭','G','A♭','A','B♭','B'];
+function keyList(flat, minor){
+  return (flat ? KEY_FLAT : KEY_SHARP).map(x=>x + (minor ? 'm' : ''));
+}
+// 押さえやすいキーを先に出す用（従来の並びは使わない）
+const KEY_MAJOR = KEY_SHARP.slice();
+const KEY_MINOR = KEY_SHARP.map(x=>x+'m');
 
 /* ---- 別々に入っている曲を、ひとつのバージョン違いにまとめる ---- */
 let mergeIds = [], mergeBase = null;
