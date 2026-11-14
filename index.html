@@ -2442,7 +2442,7 @@ const FB_CONFIG = {
 };
 
 // このファイルの版。差し替えたかどうかの目印になる
-const APP_BUILD = 'V261114-09b';
+const APP_BUILD = 'V261114-09c';
 
 let fb = null, fbUser = null, fbUnsub = null, syncState = 'off', pushTimer = null;
 let syncPaused = false;   // まとめ消しの最中だけ true。消しかけの状態が戻ってくるのを防ぐ
@@ -3175,14 +3175,21 @@ function driveSnap(s){
 async function runDriveBackup(all){
   if (driveBusy || driveState !== 'on' || isViewer || !songs.length) return;
   driveBusy = true;
+  driveLastNote = '';
+  driveProg = {i:0, n:0};
   let done = 0, failed = 0;
   const tally = {new:0, moved:0, renamed:0, updated:0};
   try{
     const root = await driveFindRoot();
     const folders = {};
+    driveProg = {i:0, n: all ? songs.length
+      : songs.filter(x=>drivePushed.get(x.id) !== driveSnap(x)).length};
+    drawDrive();
     for (const s of songs){
       const snap = driveSnap(s);
       if (!all && drivePushed.get(s.id) === snap) continue;
+      driveProg.i++;
+      if (driveProg.n > 3 && driveProg.i % 5 === 1) drawDrive();
       const g = (s.folder || '未分類').trim() || '未分類';
       if (!folders[g]) folders[g] = await driveFolder(safeName(g), root);
       try{
@@ -3208,9 +3215,7 @@ async function runDriveBackup(all){
       tidy.trashed  ? '消した曲 ' + tidy.trashed + ' 件をゴミ箱へ' : '',
       tidy.parked   ? '置き去り ' + tidy.parked  + ' 件を「' + DRIVE_OLD + '」へ' : ''
     ].filter(Boolean);
-    driveLastNote = notes.length ? notes.join(' / ') : (all ? '変える必要はありませんでした' : '');
-    if (all) alertShare(notes.length ? 'ドライブを整理しました（' + notes.join(' / ') + '）'
-                                     : 'ドライブは変える必要がありませんでした');
+    driveLastNote = notes.length ? notes.join(' / ') : '変えるところはありませんでした';
   }catch(e){
     if ((e && e.message) !== 'EXPIRED'){
       driveState = 'error';
@@ -3218,9 +3223,12 @@ async function runDriveBackup(all){
     }
   }
   driveBusy = false;
+  driveProg = {i:0, n:0};
   drawDrive();
+  return {done, failed, note: driveLastNote, error: driveError};
 }
 let driveLastAt = 0, lastDriveErr = '', driveLastNote = '';
+let driveProg = {i:0, n:0};
 function scheduleDriveBackup(all){
   if (driveState !== 'on') return;
   clearTimeout(driveTimer);
@@ -3319,7 +3327,13 @@ function drawDrive(){
            <button class="ghost danger" onclick="disconnectDrive()">連携をやめる</button>`
         : `<button class="act" onclick="connectDrive()">ドライブにつなぐ</button>`}
     </div>
-    ${driveBusy ? '<p class="hint" style="margin-top:8px">書き出しています…</p>' : ''}
+    ${driveBusy
+      ? `<p class="hint" style="margin-top:8px"><b>書き出しています…</b>${
+          driveProg.n ? ` ${driveProg.i} / ${driveProg.n} 曲` : ''}</p>`
+      : (driveLastNote
+          ? `<p class="hint" style="margin-top:8px"><b>書き出しが終わりました。</b>${esc(driveLastNote)}${
+              when ? `（${esc(when)}）` : ''}</p>`
+          : '')}
     ${driveError ? `<div class="syncerr" style="margin-top:10px"><b>${esc(driveError)}</b>
       ${/鍵の期限/.test(driveError) ? '<p style="margin:2px 0 0;font-size:.8rem">「ドライブにつなぐ」をもう一度押すと直ります。</p>' : ''}
       </div>` : ''}
@@ -5255,6 +5269,22 @@ function addSelectedToPlaylist(){
 let tidyRekey = false;
 
 // 何が変わるかを先に出す（まだ保存はしない）
+// 譜面の文字から見えるキーは「押さえる形」。カポのぶん上げたものが鳴る音になる
+function soundKeyGuess(text, capo){
+  const g = guessKey(parseBody(text || ''));
+  if (!g) return '';
+  const played = g.root + (g.mode === 'minor' ? 'm' : '');
+  return capo ? shiftKey(played, capo) : played;
+}
+// キー名が同じものを指しているか。B♭ と A# は同じ、C と Am は別
+function sameKeyName(a, b){
+  const na = normTok(String(a || '').trim()), nb = normTok(String(b || '').trim());
+  if (!na || !nb) return false;
+  if (/m$/i.test(na) !== /m$/i.test(nb)) return false;
+  const ia = pc(na.replace(/m$/i, '')), ib = pc(nb.replace(/m$/i, ''));
+  return ia >= 0 && ia === ib;
+}
+
 function tidyPlan(){
   const out = [];
   songs.forEach(s=>{
@@ -5269,27 +5299,28 @@ function tidyPlan(){
     if (!s.artist && p.artist){ next.artist = p.artist; why.push('アーティスト: ' + p.artist); }
     if (!s.capo && p.capo){ next.capo = p.capo; why.push('カポ: ' + p.capo); }
     if (!s.bpm && p.bpm){ next.bpm = p.bpm; why.push('テンポ: ' + p.bpm); }
-    if (!s.key && p.key){ next.key = p.key; why.push('キー: ' + p.key); }
-    else if (tidyRekey && p.key && p.key !== s.key){
-      next.key = p.key;
-      why.push('キー: ' + (s.key||'—') + ' → ' + p.key + (p.keyGuessed ? '（推測）' : ''));
-    }
 
-    // カポ付きなのに、キーの欄に「押さえ方」のキーが入っている曲を直す。
-    // 以前は譜面のコードからキーを決めていたので、カポのぶん低いまま入っている
-    const capoNow = next.capo || s.capo || 0;
-    const keyNow  = next.key  || s.key  || '';
-    if (capoNow > 0 && keyNow){
-      const g = guessKey(parseBody(next.text != null ? next.text : (s.text || '')));
-      if (g){
-        const played = g.root + (g.mode === 'minor' ? 'm' : '');
-        const sameAsPlayed = pc(normTok(keyNow).replace(/m$/,'')) === pc(normTok(played).replace(/m$/,''));
-        const raised = shiftKey(keyNow, capoNow);
-        if (sameAsPlayed && pc(normTok(raised).replace(/m$/,'')) !== pc(normTok(keyNow).replace(/m$/,''))){
-          next.key = raised;
-          why.push('キーの欄が押さえ方のままでした: ' + keyNow + ' → ' + raised +
-                   '（カポ' + capoNow + 'ぶん上げて鳴る音にする）');
-        }
+    // 鳴る音のキーを割り出す。
+    // 譜面に key: と書いてあればそれを信じ、無ければコードから推測してカポのぶん上げる
+    // （譜面のコードは押さえる形なので、そのままだとカポのぶん低い）
+    const capoNow = next.capo != null ? next.capo : (s.capo || 0);
+    const textNow = next.text != null ? next.text : (s.text || '');
+    const want = (p.key && !p.keyGuessed) ? p.key : soundKeyGuess(textNow, capoNow);
+
+    if (!s.key && want){
+      next.key = want;
+      why.push('キー: ' + want);
+    } else if (tidyRekey && want && !sameKeyName(want, s.key)){
+      next.key = want;
+      why.push('キー: ' + (s.key || '—') + ' → ' + want + (p.keyGuessed ? '（推測）' : ''));
+    } else if (!tidyRekey && capoNow > 0 && s.key && want){
+      // 以前は譜面のコードからキーを決めていたので、カポのぶん低いまま入っている曲がある。
+      // 欄のキーが「押さえる形」と一致していて、鳴る音と食い違うときだけ直す
+      const played = soundKeyGuess(textNow, 0);
+      if (played && sameKeyName(s.key, played) && !sameKeyName(s.key, want)){
+        next.key = want;
+        why.push('キーの欄が押さえ方のままでした: ' + s.key + ' → ' + want +
+                 '（カポ' + capoNow + 'ぶん上げて鳴る音にする）');
       }
     }
     if (why.length) out.push({id:s.id, title:s.title, next, why});
@@ -5351,8 +5382,10 @@ async function applyTidy(){
   if (plan.length) alertShare(`${plan.length} 曲を整理しました`);
   if (doDrive){
     alertShare('ドライブに書き出しています…');
-    await runDriveBackup(true);
-    if (!driveError) alertShare('ドライブへの書き出しが終わりました');
+    const r = await runDriveBackup(true);
+    alertShare(r && r.error
+      ? 'ドライブへの書き出しでつまずきました: ' + r.error
+      : 'ドライブへの書き出しが終わりました（' + ((r && r.note) || '変更なし') + '）');
   }
 }
 
