@@ -1628,7 +1628,7 @@ function openEditCapoPick(){
 function cycleAcc(){
   const s = curEdit(); if (!s) return;
   const next = s.acc === 'sharp' ? 'flat' : s.acc === 'flat' ? '' : 'sharp';
-  s.acc = next || undefined;
+  if (next) s.acc = next; else delete s.acc;
   const ta = curEditText();
   if (ta && next){
     const pos = ta.selectionStart;
@@ -2448,7 +2448,7 @@ const FB_CONFIG = {
 };
 
 // このファイルの版。差し替えたかどうかの目印になる
-const APP_BUILD = 'V261114-10';
+const APP_BUILD = 'V261114-12';
 
 let fb = null, fbUser = null, fbUnsub = null, syncState = 'off', pushTimer = null;
 let syncPaused = false;   // まとめ消しの最中だけ true。消しかけの状態が戻ってくるのを防ぐ
@@ -2603,7 +2603,12 @@ let pushed = new Map();   // id -> JSON文字列
 const LOCAL_ONLY = ['plays', 'lastOpen', 'hasAudio'];
 function forCloud(s){
   const out = {};
-  for (const k in s){ if (k !== 'id' && !LOCAL_ONLY.includes(k)) out[k] = s[k]; }
+  for (const k in s){
+    if (k === 'id' || LOCAL_ONLY.includes(k)) continue;
+    const v = s[k];
+    if (v === undefined) continue;        // undefined は送れないので外す
+    out[k] = v;
+  }
   return out;
 }
 function snapOf(s){ return JSON.stringify(forCloud(s)); }
@@ -7205,16 +7210,19 @@ function saveDraft(){
   const text = p.body || draft.text;
   const make = (mode, grp, vname)=>{
     const id = 'u'+Date.now();
-    songs.push({id, vgroup: grp || id, vname: vname || '',
+    const capo = Math.max(0, Math.min(12, parseInt(draft.capo,10) || p.capo || 0));
+    const one = {id, vgroup: grp || id, vname: vname || '',
       folder:(draft.folder||'').trim()||p.folder||'未分類', title,
       artist: draft.artist || p.artist || '',
       key: (draft.key || p.key || 'C').trim(),
       capoBase: capoBaseOf(draft),
-      textCapo: textCapoOf({...draft, capo: Math.max(0, Math.min(12, parseInt(draft.capo,10) || p.capo || 0))}),
-      capo: Math.max(0, Math.min(12, parseInt(draft.capo,10) || p.capo || 0)),
-      acc: draft.acc, bpm: draft.bpm || p.bpm || 100, barsPerLine:8, transpose:0, plays:0, v:2, text});
+      textCapo: textCapoOf({...draft, capo}),
+      capo,
+      bpm: draft.bpm || p.bpm || 100, barsPerLine:8, transpose:0, plays:0, v:2, sv:2, text};
+    if (draft.acc) one.acc = draft.acc;
+    songs.push(one);
     persist();
-    draft = {text:'', title:'', artist:'', key:'', capo:0, folder:'', acc:undefined, capoBase:'play', transpose:0, keyEdited:false, keyGuessed:false};
+    draft = {text:'', title:'', artist:'', key:'', capo:0, folder:'', capoBase:'play', transpose:0, keyEdited:false, keyGuessed:false};
     go('list');
     if (mode === 'version') alertShare('「' + vname + '」として足しました');
   };
