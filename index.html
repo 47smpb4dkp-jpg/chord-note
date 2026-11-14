@@ -130,8 +130,10 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
 /* コード譜 */
 #sheet{font-size:var(--sheet-size,16px)}
 /* 中央ぞろえ。コードと歌詞の縦の関係は崩さない（かたまりの中は左ぞろえのまま） */
-#sheet.ctr{width:max-content;max-width:100%;margin-left:auto;margin-right:auto}
-.aligned.ctr{width:max-content;max-width:100%;margin-left:auto;margin-right:auto}
+#sheet.ctr{text-align:center}
+#sheet.ctr .seg,#sheet.ctr .lrow{text-align:left}
+#sheet.ctr .lrow{display:inline-block;max-width:100%}
+.aligned.ctr{width:max-content;max-width:100%;margin-left:auto;margin-right:auto;text-align:left}
 .blk{margin-bottom:2px}
 .spacer{height:1.1em}
 /* コードと、その下の歌詞を1組にして並べる。狭いときは組ごと折り返す */
@@ -1294,6 +1296,121 @@ function retuneLine(line, n, pref){
   return sm.mark + out.replace(/\s+$/, '');
 }
 
+/* ---- 譜面をととのえる。コード行だけを直し、歌詞の行には触らない ---- */
+const GAP_MAX = 15;     // これ以上あいていたら詰める（半角いくつぶん）
+const GAP_MIN = 2;      // 続けて書かれたコードのあいだに最低これだけあける
+
+// コード行・セクション行だけに手を入れる
+function fixChordLines(text, fn){
+  return String(text == null ? '' : text).replace(/\r\n/g,'\n').split('\n').map(L=>{
+    if (!L.trim()) return L;
+    const k = lineKind(L);
+    if (k !== 'chord' && k !== 'section') return L;
+    const sm = stripMark(L);
+    return sm.mark + fn(sm.body);
+  }).join('\n');
+}
+
+// ① あきすぎを詰める。GAP_MAX より広いあきを GAP_MAX にそろえる
+function squeezeGaps(text){
+  return fixChordLines(text, body=>{
+    let out = '', run = '';
+    const flush = ()=>{
+      if (!run) return;
+      const w = dispWidth(run);
+      out += w > GAP_MAX ? ' '.repeat(GAP_MAX) : run;
+      run = '';
+    };
+    for (const ch of body){
+      if (ch === ' ' || ch === '\u3000'){ run += ch; continue; }
+      flush();
+      out += ch;
+    }
+    // 行末のあきは落とす
+    return out.replace(/\s+$/, '');
+  });
+}
+
+// ② 詰まりすぎをあける。となり合ったコードのあいだを全角1つぶんあける
+function loosenGaps(text){
+  return fixChordLines(text, body=>{
+    const toks = tokenize(body).filter(t=>t.ci != null);
+    if (toks.length < 2) return body;
+    let out = '', at = 0;
+    for (const t of toks){
+      if (t.ci < at) continue;
+      if (body.substr(t.ci, t.raw.length) !== t.raw) continue;
+      const gap = body.slice(at, t.ci);
+      if (out){
+        const w = dispWidth(gap);
+        out += w < GAP_MIN ? ' '.repeat(GAP_MIN) : gap;
+      } else {
+        out += gap;                      // 行頭の字下げはそのまま
+      }
+      out += t.raw;
+      at = t.ci + t.raw.length;
+    }
+    const tail = body.slice(at);
+    return (out + tail).replace(/\s+$/, '');
+  });
+}
+
+// ③ 分数コードの書き方をそろえる。桁は動かさない（足りない幅は空白で埋める）
+const ON_RE  = /^([A-G][#b\u266d\u266f\uff03\uff42]?[^\s\u3000\/／]*?)on([A-G][#b\u266d\u266f\uff03\uff42]?)$/;
+const SLS_RE = /^([A-G][#b\u266d\u266f\uff03\uff42]?[^\s\u3000\/／]*)[\/／]([A-G][#b\u266d\u266f\uff03\uff42]?)$/;
+function slashStyle(text, to){
+  return fixChordLines(text, body=>{
+    const toks = tokenize(body).filter(t=>t.ci != null);
+    if (!toks.length) return body;
+    let out = '', at = 0;
+    for (const t of toks){
+      if (t.ci < at) continue;
+      if (body.substr(t.ci, t.raw.length) !== t.raw) continue;
+      const raw = t.raw;
+      let next = raw;
+      const n = normTok(raw);
+      if (to === 'slash'){
+        const m = ON_RE.exec(n);
+        if (m) next = m[1] + '/' + m[2];
+      } else {
+        const m = SLS_RE.exec(n);
+        if (m) next = m[1] + 'on' + m[2];
+      }
+      // 元の桁に戻す。縮んだぶんは空白で埋めるので、歌詞との位置関係は変わらない
+      if (dispWidth(out) < t.col){ while (dispWidth(out) < t.col) out += ' '; }
+      else if (out && !/[\s\u3000]$/.test(out)) out += ' ';
+      out += next;
+      at = t.ci + raw.length;
+    }
+    const tail = body.slice(at);
+    if (tail.trim()) out += (/[\s\u3000]$/.test(out) ? '' : ' ') + tail.trim();
+    return out.replace(/\s+$/, '');
+  });
+}
+
+// ボタンから呼ぶ。直す前と比べて、変わった行数を知らせる
+function tidySheet(kind){
+  const ta = curEditText(); if (!ta) return;
+  const before = ta.value;
+  const after =
+    kind === 'squeeze' ? squeezeGaps(before)
+    : kind === 'loosen' ? loosenGaps(before)
+    : kind === 'slash'  ? slashStyle(before, 'slash')
+    : kind === 'on'     ? slashStyle(before, 'on')
+    : before;
+  if (after === before){ alertShare('直すところはありませんでした'); return; }
+  const a = before.split('\n'), b = after.split('\n');
+  let n = 0;
+  for (let i = 0; i < b.length; i++) if (a[i] !== b[i]) n++;
+  const pos = ta.selectionStart;
+  ta.value = after;
+  const s = curEdit();
+  if (s === draft) draft.text = after;
+  try{ ta.setSelectionRange(pos, pos); }catch(e){}
+  if (editing) livePreview(); else previewDraft();
+  alertShare(n + ' 行を直しました');
+}
+
 // コード譜ぜんたいを移調して書き直す。歌詞の行は触らない
 function retuneText(text, n, pref){
   if (!n) return text;
@@ -1407,6 +1524,15 @@ function chordBarHtml(){
     ${headLine('コードを入れる', 'chordbar',
       '<span style="font-size:.72rem;color:var(--fg-dim)">コード譜のカーソルのところに入ります</span>')}
     <div class="picker cp" id="palette"></div>
+    ${headLine('自動で直す', 'tidysheet',
+      '<span style="font-size:.72rem;color:var(--fg-dim)">コードの行だけを直します。歌詞は触りません</span>')}
+    <div class="picker cp">
+      <button class="pk sub" onclick="tidySheet('squeeze')">あきすぎを詰める</button>
+      <button class="pk sub" onclick="tidySheet('loosen')">詰まりすぎをあける</button>
+      <span class="tabdiv"></span>
+      <button class="pk sub" onclick="tidySheet('slash')">分数を C/G に</button>
+      <button class="pk sub" onclick="tidySheet('on')">分数を ConG に</button>
+    </div>
   </div>`;
 }
 // メモを入れる欄（表示の確認の下に出す）
@@ -1538,6 +1664,18 @@ const HELP = {
     <p>マイクは空気中の音を拾うので、自分の演奏でも、スピーカーから流れている曲でも構いません。
       止めると自動で解析が始まります。</p>
     <p>解析は目安です。そのまま使わず、必ず譜面を見て直してください。</p>`],
+  tidysheet: ['自動で直す', `
+    <p>コードの行だけに手を入れます。<b>歌詞の行は触りません。</b>
+      直したあとに気に入らなければ、保存せずに戻ってください。</p>
+    <p><b>あきすぎを詰める</b>…コードとコードのあいだが半角 ${15} 文字より広いとき、
+      ${15} 文字ぶんにそろえます。読み込んだ譜面で、コードの行だけが歌詞よりずっと長くなって
+      横に飛び出しているときに使ってください。</p>
+    <p><b>詰まりすぎをあける</b>…となり合ったコードがくっついている（または半角1つしかあいていない）とき、
+      全角1つぶんあけます。</p>
+    <p><b>分数コードを ／ に / on に</b>…<code>ConG</code> と <code>C/G</code> を行き来します。
+      <b>桁は動かしません</b>。字数が変わったぶんは空白で埋めるので、歌詞との位置関係はそのままです。</p>
+    <p>小節の区切りに使う<b>全角の ／ は分数コードとして読みません</b>。
+      分数コードは<b>半角の /</b> で書いてください。</p>`],
   chordbar: ['コードを入れる', `
     <p>押すと、<b>コード譜のカーソルの位置</b>にそのコードが入ります。
       右の空欄に打ち込めば、一覧にないコードも入れられます。</p>`],
@@ -2512,7 +2650,7 @@ const FB_CONFIG = {
 };
 
 // このファイルの版。差し替えたかどうかの目印になる
-const APP_BUILD = 'V261115-08';
+const APP_BUILD = 'V261115-08b';
 
 let fb = null, fbUser = null, fbUnsub = null, syncState = 'off', pushTimer = null;
 let syncPaused = false;   // まとめ消しの最中だけ true。消しかけの状態が戻ってくるのを防ぐ
