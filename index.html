@@ -2672,7 +2672,7 @@ const FB_CONFIG = {
 };
 
 // このファイルの版。差し替えたかどうかの目印になる
-const APP_BUILD = 'V261115-08c';
+const APP_BUILD = 'V261115-08d';
 
 let fb = null, fbUser = null, fbUnsub = null, syncState = 'off', pushTimer = null;
 let syncPaused = false;   // まとめ消しの最中だけ true。消しかけの状態が戻ってくるのを防ぐ
@@ -2850,13 +2850,23 @@ let pushed = new Map();   // id -> JSON文字列
 // クラウドに送らない項目。端末ごとに違ってよいものは外す。
 // （曲を開くたびに書き込みが走って、端末のバックアップが膨らむのを防ぐ）
 const LOCAL_ONLY = ['plays', 'lastOpen', 'hasAudio'];
+// undefined を取り除く。1つ混ざるだけでまとめ書き全体が弾かれ、同期が止まるため
+function dropUndef(v){
+  if (Array.isArray(v)) return v.filter(x=>x !== undefined).map(dropUndef);
+  if (v && typeof v === 'object' && !(v instanceof Date)){
+    const o = {};
+    for (const k in v){ if (v[k] !== undefined) o[k] = dropUndef(v[k]); }
+    return o;
+  }
+  return v;
+}
 function forCloud(s){
   const out = {};
   for (const k in s){
     if (k === 'id' || LOCAL_ONLY.includes(k)) continue;
     const v = s[k];
-    if (v === undefined) continue;        // undefined は送れないので外す
-    out[k] = v;
+    if (v === undefined) continue;
+    out[k] = dropUndef(v);
   }
   return out;
 }
