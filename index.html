@@ -1072,7 +1072,10 @@ function parseBody(text){
   return blocks;
 }
 
-function parseSheet(text){
+// opts.knownTitle を渡すと、本文の1行目を曲名として取り上げない。
+// 取り込み済みの曲を読み直すときに、歌詞の行を削ってしまわないため
+function parseSheet(text, opts){
+  const knownTitle = !!(opts && opts.knownTitle);
   let lines = text.replace(/\r\n/g,'\n').split('\n');
   const out = {title:'', artist:'', credit:'', key:null, keyGuessed:false,
                capo:null, bpm:null, transpose:0, folder:'', vname:'', capoBase:'', blocks:[]};
@@ -1111,7 +1114,7 @@ function parseSheet(text){
   const looksLikeKeyLine = L =>
     /Key\s*(?:on|=|:|：)?\s*[A-G]/i.test(L) || /Capo/i.test(L.normalize('NFKC'));
   while (i < lines.length && !lines[i].trim()) i++;
-  if (i < lines.length && !isChordLine(lines[i]) && !looksLikeKeyLine(lines[i])){
+  if (!knownTitle && i < lines.length && !isChordLine(lines[i]) && !looksLikeKeyLine(lines[i])){
     const head = lines[i].trim();
     // 「曲名　作詞・作曲／○○」のように1行に同居している場合は切り分ける
     const cm = head.match(/^(.*?)[\s\u3000]*(作詞|作曲|編曲|words|music)[^\s]*[\s\u3000]*[／\/:：][\s\u3000]*(.+)$/i);
@@ -1119,10 +1122,13 @@ function parseSheet(text){
       if (!out.title) out.title = cm[1].trim();
       if (!out.artist) out.artist = cm[3].trim();
       out.credit = head;
+      i++;
     } else if (!out.title){
       out.title = head;
+      i++;
     }
-    i++;
+    // 情報欄から曲名が分かっているときは、本文の行を曲名と決めつけて外さない
+    // （歌詞の1行目を消してしまうため）
   }
 
   const body = [];
@@ -2442,7 +2448,7 @@ const FB_CONFIG = {
 };
 
 // このファイルの版。差し替えたかどうかの目印になる
-const APP_BUILD = 'V261114-09c';
+const APP_BUILD = 'V261114-10';
 
 let fb = null, fbUser = null, fbUnsub = null, syncState = 'off', pushTimer = null;
 let syncPaused = false;   // まとめ消しの最中だけ true。消しかけの状態が戻ってくるのを防ぐ
@@ -5288,7 +5294,7 @@ function sameKeyName(a, b){
 function tidyPlan(){
   const out = [];
   songs.forEach(s=>{
-    const p = parseSheet(s.text || '');
+    const p = parseSheet(s.text || '', {knownTitle: !!String(s.title || '').trim()});
     const next = {...s}, why = [];
     if (p.body && p.body !== s.text){
       next.text = p.body;
