@@ -1300,13 +1300,31 @@ function retuneLine(line, n, pref){
 const GAP_MAX = 15;     // これ以上あいていたら詰める（半角いくつぶん）
 const GAP_MIN = 2;      // 続けて書かれたコードのあいだに最低これだけあける
 
-// コード行・セクション行だけに手を入れる
-function fixChordLines(text, fn){
+// 全角の ／ は小節の区切り。コードとくっついていたら全角1つぶんあける
+// （半角の / は分数コードなので触らない）
+function spaceBars(body){
+  let out = '';
+  for (let i = 0; i < body.length; i++){
+    const ch = body[i];
+    if (ch !== '\uff0f' && ch !== '\u2044'){ out += ch; continue; }
+    if (out && !/[\s\u3000]$/.test(out)) out += '\u3000';
+    out += ch;
+    const nx = body[i + 1];
+    if (nx && !/[\s\u3000]/.test(nx)) out += '\u3000';
+  }
+  return out;
+}
+
+// コード行・セクション行だけに手を入れる。
+// relaxed を渡すと、小節の区切りで詰まっていてコード行と読めない行も対象にする
+// （C／G／Am のように全部くっついていると、そのままでは歌詞の行に見えるため）
+function fixChordLines(text, fn, relaxed){
+  const isChord = k => k === 'chord' || k === 'section';
   return String(text == null ? '' : text).replace(/\r\n/g,'\n').split('\n').map(L=>{
     if (!L.trim()) return L;
-    const k = lineKind(L);
-    if (k !== 'chord' && k !== 'section') return L;
     const sm = stripMark(L);
+    if (!isChord(lineKind(L)) &&
+        !(relaxed && /[\uff0f\u2044]/.test(sm.body) && isChord(lineKind(spaceBars(sm.body))))) return L;
     return sm.mark + fn(sm.body);
   }).join('\n');
 }
@@ -1331,9 +1349,11 @@ function squeezeGaps(text){
   });
 }
 
-// ② 詰まりすぎをあける。となり合ったコードのあいだを全角1つぶんあける
+// ② 詰まりすぎをあける。となり合ったコードのあいだを全角1つぶんあける。
+// 小節の区切り（全角 ／）に接しているコードも離す
 function loosenGaps(text){
-  return fixChordLines(text, body=>{
+  return fixChordLines(text, raw=>{
+    const body = spaceBars(raw);
     const toks = tokenize(body).filter(t=>t.ci != null);
     if (toks.length < 2) return body;
     let out = '', at = 0;
@@ -1352,7 +1372,7 @@ function loosenGaps(text){
     }
     const tail = body.slice(at);
     return (out + tail).replace(/\s+$/, '');
-  });
+  }, true);
 }
 
 // ③ 分数コードの書き方をそろえる。桁は動かさない（足りない幅は空白で埋める）
@@ -1671,7 +1691,9 @@ const HELP = {
       ${15} 文字ぶんにそろえます。読み込んだ譜面で、コードの行だけが歌詞よりずっと長くなって
       横に飛び出しているときに使ってください。</p>
     <p><b>詰まりすぎをあける</b>…となり合ったコードがくっついている（または半角1つしかあいていない）とき、
-      全角1つぶんあけます。</p>
+      全角1つぶんあけます。小節の区切りに使う<b>全角の ／</b> にコードが接しているときも、
+      同じように離します（<code>C／G</code> → <code>C　／　G</code>）。
+      <b>半角の / は分数コードなので触りません。</b></p>
     <p><b>分数コードを ／ に / on に</b>…<code>ConG</code> と <code>C/G</code> を行き来します。
       <b>桁は動かしません</b>。字数が変わったぶんは空白で埋めるので、歌詞との位置関係はそのままです。</p>
     <p>小節の区切りに使う<b>全角の ／ は分数コードとして読みません</b>。
@@ -2650,7 +2672,7 @@ const FB_CONFIG = {
 };
 
 // このファイルの版。差し替えたかどうかの目印になる
-const APP_BUILD = 'V261115-08b';
+const APP_BUILD = 'V261115-08c';
 
 let fb = null, fbUser = null, fbUnsub = null, syncState = 'off', pushTimer = null;
 let syncPaused = false;   // まとめ消しの最中だけ true。消しかけの状態が戻ってくるのを防ぐ
