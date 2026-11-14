@@ -130,9 +130,8 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
 /* コード譜 */
 #sheet{font-size:var(--sheet-size,16px)}
 /* 中央ぞろえ。コードと歌詞の縦の関係は崩さない（かたまりの中は左ぞろえのまま） */
-#sheet.ctr{text-align:center}
-#sheet.ctr .seg,#sheet.ctr .lrow{text-align:left}
-#sheet.ctr .lrow{display:inline-block;max-width:100%}
+#sheet.ctr{width:max-content;max-width:100%;margin-left:auto;margin-right:auto}
+.aligned.ctr{width:max-content;max-width:100%;margin-left:auto;margin-right:auto}
 .blk{margin-bottom:2px}
 .spacer{height:1.1em}
 /* コードと、その下の歌詞を1組にして並べる。狭いときは組ごと折り返す */
@@ -1366,6 +1365,29 @@ function editInfoRow(s){
     </div>
     <div id="keyNote">${keyNoteHtml(s)}</div>`;
 }
+// 確認の窓の「左ぞろえ／中央ぞろえ」。曲画面とおなじ設定を使うので、
+// ここで決めたものがそのまま本番の見え方になる
+function togglePrevAlign(){
+  const s = curEdit();
+  const now = sheetAlignOf(s) === 'center' ? 'left' : 'center';
+  if (s) s.sheetAlign = now;                 // その曲に覚える
+  devSet('sheetAlign', now);                 // この端末の既定にもする
+  if (editing) persist();
+  drawPrevAlign();
+}
+function drawPrevAlign(){
+  const s = curEdit();
+  const ctr = sheetAlignOf(s) === 'center';
+  const b = document.getElementById('prevAlign');
+  if (b) b.textContent = ctr ? '中央ぞろえ' : '左ぞろえ';
+  ['editPrev','draftPrev','bPrev'].forEach(id=>{
+    const box = document.getElementById(id);
+    if (!box) return;
+    const el = box.querySelector('.aligned');
+    if (el) el.classList.toggle('ctr', ctr);
+  });
+}
+
 // 押したボタンの文字だけ書き換える（入力中の文字を消さないため）
 function refreshKeyRow(){
   const s = curEdit(); if (!s) return;
@@ -2490,7 +2512,7 @@ const FB_CONFIG = {
 };
 
 // このファイルの版。差し替えたかどうかの目印になる
-const APP_BUILD = 'V261115-07';
+const APP_BUILD = 'V261115-08';
 
 let fb = null, fbUser = null, fbUnsub = null, syncState = 'off', pushTimer = null;
 let syncPaused = false;   // まとめ消しの最中だけ true。消しかけの状態が戻ってくるのを防ぐ
@@ -4114,7 +4136,8 @@ function renderInner(){
           <textarea id="eText" oninput="livePreview()" onscroll="syncScroll('eText','editPrev')">${esc(s.text||'')}</textarea>
         </div>
         <div class="card sp-b">
-          <h2>表示の確認</h2>
+          <div class="hdrline"><label>表示の確認</label><span class="sp"></span>
+            <button class="mini" id="prevAlign" onclick="togglePrevAlign()"></button></div>
           <div id="editPrev" onscroll="syncScroll('editPrev','eText')"></div>
         </div>
       </div>
@@ -4480,7 +4503,8 @@ function renderInner(){
           <textarea id="bText" oninput="batchPreview()" onscroll="syncScroll('bText','bPrev')">${esc(b.text||'')}</textarea>
         </div>
         <div class="card sp-b">
-          <h2>表示の確認</h2>
+          <div class="hdrline"><label>表示の確認</label><span class="sp"></span>
+            <button class="mini" id="prevAlign" onclick="togglePrevAlign()"></button></div>
           <div id="bPrev" onscroll="syncScroll('bPrev','bText')"></div>
         </div>
       </div>
@@ -4551,7 +4575,8 @@ function renderInner(){
           <textarea id="draftText" oninput="draft.text=this.value;previewDraft()" onscroll="syncScroll('draftText','draftPrev')" placeholder="Ｇ　Ａｍ　Ｂｍ　Ｃ&#10;恋心を隠したまんまで">${esc(draft.text)}</textarea>
         </div>
         <div class="card sp-b">
-          <h2>表示の確認</h2>
+          <div class="hdrline"><label>表示の確認</label><span class="sp"></span>
+            <button class="mini" id="prevAlign" onclick="togglePrevAlign()"></button></div>
           <div id="draftPrev" onscroll="syncScroll('draftPrev','draftText')"></div>
         </div>
       </div>
@@ -4994,6 +5019,7 @@ function livePreview(){
   const keep = box.scrollTop, keepX = box.scrollLeft;
   box.innerHTML = '';
   box.appendChild(renderAligned(tmp, {lineToggle: toggleLineAt}));
+  drawPrevAlign();
   box.scrollTop = keep; box.scrollLeft = keepX;
 }
 
@@ -6179,6 +6205,7 @@ function batchPreview(){
   box.appendChild(renderAligned({text:g('bText'), key:g('bKey'),
     capo:parseInt(g('bCapo'),10)||0, transpose:0, bpm:100, barsPerLine:8},
     {lineToggle: toggleLineAt}));
+  drawPrevAlign();
   box.scrollTop = keep; box.scrollLeft = keepX;
 }
 
@@ -7291,6 +7318,7 @@ function previewDraft(){
                textCapo: textCapoOf({...draft, capo:(parseInt(draft.capo,10)||0)}),
                transpose:0, bpm:100, barsPerLine:8, text:draft.text};
   prev.appendChild(renderAligned(tmp, {lineToggle: toggleLineAt}));
+  drawPrevAlign();
   prev.scrollTop = keep; prev.scrollLeft = keepX;
   // コード行が1つも無いときの注意は、確認の窓の外（統計のところ）に出す
   if (stat && noChord) stat.innerHTML = noChord + stat.innerHTML;
