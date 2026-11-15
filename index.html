@@ -140,7 +140,10 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
 .pairrow{display:block}
 .seg{display:inline-block;vertical-align:top;max-width:100%}
 .seg .sc{display:block;height:1.5em;line-height:1.5;white-space:nowrap;
+  padding-right:1em;
   font-family:var(--font-mono);font-weight:700;color:var(--accent);font-size:.92em}
+/* 行末のコードには余白が要らない（右にずれて見えるのを防ぐ） */
+.seg:last-child .sc{padding-right:0}
 .seg .sc.s{color:var(--teal);font-family:var(--font-ja);font-weight:700}
 .seg .sc.n{color:var(--note);font-family:var(--font-ja);font-weight:400;font-size:.8em}
 .seg .sc.b{color:var(--fg-dim)}
@@ -2672,7 +2675,7 @@ const FB_CONFIG = {
 };
 
 // このファイルの版。差し替えたかどうかの目印になる
-const APP_BUILD = 'V261115-08d';
+const APP_BUILD = 'V261115-09';
 
 let fb = null, fbUser = null, fbUnsub = null, syncState = 'off', pushTimer = null;
 let syncPaused = false;   // まとめ消しの最中だけ true。消しかけの状態が戻ってくるのを防ぐ
