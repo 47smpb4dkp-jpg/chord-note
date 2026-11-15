@@ -133,7 +133,8 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
 #sheet.ctr{text-align:center}
 #sheet.ctr .seg,#sheet.ctr .lrow{text-align:left}
 #sheet.ctr .lrow{display:inline-block;max-width:100%}
-.aligned.ctr{width:max-content;max-width:100%;margin-left:auto;margin-right:auto;text-align:left}
+.aligned .agrp{display:block}
+.aligned.ctr .agrp{width:max-content;max-width:100%;margin-left:auto;margin-right:auto}
 .blk{margin-bottom:2px}
 .spacer{height:1.1em}
 /* コードと、その下の歌詞を1組にして並べる。狭いときは組ごと折り返す */
@@ -2676,7 +2677,7 @@ const FB_CONFIG = {
 };
 
 // このファイルの版。差し替えたかどうかの目印になる
-const APP_BUILD = 'V261115-09b';
+const APP_BUILD = 'V261115-09c';
 
 let fb = null, fbUser = null, fbUnsub = null, syncState = 'off', pushTimer = null;
 let syncPaused = false;   // まとめ消しの最中だけ true。消しかけの状態が戻ってくるのを防ぐ
@@ -5264,9 +5265,32 @@ function renderAligned(song, opts){
     }
     if (!line.length) tx.appendChild(document.createTextNode('\u00a0'));
     row.appendChild(tx);
+    row.dataset.kind = kind;
     el.appendChild(row);
   });
+  groupRows(el);
   return el;
+}
+
+// コード行と、その下の歌詞の行をひとかたまりにする。
+// 譜面画面が「コード＋歌詞」を1組にして中央へ寄せるので、確認の窓も同じ組み方にそろえる
+function groupRows(el){
+  const rows = [...el.children];
+  el.innerHTML = '';
+  let grp = null;
+  const close = ()=>{ grp = null; };
+  rows.forEach(r=>{
+    const k = r.dataset.kind;
+    if (k === 'blank'){ close(); el.appendChild(r); return; }
+    if (k === 'chord' || k === 'section' || !grp){
+      if (k === 'chord' || k === 'section') close();
+      grp = document.createElement('div');
+      grp.className = 'agrp';
+      el.appendChild(grp);
+    }
+    grp.appendChild(r);
+    if (k === 'memo') close();
+  });
 }
 
 function fitSheet(box){
