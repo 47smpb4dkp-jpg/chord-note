@@ -139,10 +139,11 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
 /* コードと、その下の歌詞を1組にして並べる。狭いときは組ごと折り返す */
 .pairrow{display:block}
 .seg{display:inline-block;vertical-align:top;max-width:100%}
+/* コードのうしろに全角1つぶんの余白を取る。歌詞が短くてもコードどうしがくっつかない。
+   歌詞のほうが広いときは、かたまりの幅が変わらないので歌詞の位置は動かない */
 .seg .sc{display:block;height:1.5em;line-height:1.5;white-space:nowrap;
-  padding-right:1em;
+  padding-right:1em; box-sizing:content-box;
   font-family:var(--font-mono);font-weight:700;color:var(--accent);font-size:.92em}
-/* 行末のコードには余白が要らない（右にずれて見えるのを防ぐ） */
 .seg:last-child .sc{padding-right:0}
 .seg .sc.s{color:var(--teal);font-family:var(--font-ja);font-weight:700}
 .seg .sc.n{color:var(--note);font-family:var(--font-ja);font-weight:400;font-size:.8em}
@@ -2675,7 +2676,7 @@ const FB_CONFIG = {
 };
 
 // このファイルの版。差し替えたかどうかの目印になる
-const APP_BUILD = 'V261115-09';
+const APP_BUILD = 'V261115-09b';
 
 let fb = null, fbUser = null, fbUnsub = null, syncState = 'off', pushTimer = null;
 let syncPaused = false;   // まとめ消しの最中だけ true。消しかけの状態が戻ってくるのを防ぐ
@@ -3775,8 +3776,10 @@ function makeSegments(chords, lyricText){
     const nextCol = last ? null : chords[k+1].col;
     const to = last ? chars.length : idxAt(nextCol).i;
     let text = chars.slice(here.i, to).join('');
-    // 次のコードまでの間隔を空白で埋める。
-    // ただし空白が長すぎると1行が横に伸びるので、上限を設ける
+    // 次のコードまでの間隔を、歌詞のうしろに空白を足して作る。
+    // 空白が長すぎると1行が横に伸びるので上限を設けるが、
+    // コード名より狭くなるとコードどうしがくっつくので、
+    // 「コード名＋全角1つ」だけは必ず確保する
     if (!last){
       const want = Math.min(nextCol - chords[k].col, hasLyric ? 4 : 8);
       let have = 0;
