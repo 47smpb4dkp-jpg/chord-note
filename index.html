@@ -1413,6 +1413,61 @@ function slashStyle(text, to){
   });
 }
 
+const BAR_RE = /[\uff0f\u2044]/;          // 全角の ／ ＝ 小節の区切り
+const BARS_PER_LINE = 4;                   // 1行に入れる小節の数
+
+// ④ 離れて書かれた半角 / を、小節線（全角 ／）に直す。
+// 前後が空白のものだけを小節線とみなす。C/G のような分数コードには触らない
+function barsToFull(text){
+  return fixChordLines(text, body=>{
+    let out = '';
+    for (let i = 0; i < body.length; i++){
+      const ch = body[i];
+      if (ch !== '/'){ out += ch; continue; }
+      const prev = i > 0 ? body[i-1] : ' ';
+      const next = i + 1 < body.length ? body[i+1] : ' ';
+      if (!/[\s\u3000]/.test(prev) || !/[\s\u3000]/.test(next)){ out += ch; continue; }
+      out += '\uff0f';
+    }
+    return out;
+  }, true);
+}
+
+// ⑤ 小節線 4つごとに折り返す。歌詞が付かない行だけが対象（イントロ・間奏・アウトロ）
+function splitBars(body, n){
+  const res = []; let cur = '', cnt = 0;
+  for (const ch of body){
+    cur += ch;
+    if (BAR_RE.test(ch)){
+      cnt++;
+      if (cnt >= n){ res.push(cur); cur = ''; cnt = 0; }
+    }
+  }
+  if (cur.trim()) res.push(cur);
+  return res.map((x,i)=> (i ? x.replace(/^[\s\u3000]+/, '') : x).replace(/[\s\u3000]+$/, ''))
+            .filter(x=>x.length);
+}
+function wrapBars(text){
+  const lines = String(text == null ? '' : text).replace(/\r\n/g,'\n').split('\n');
+  const out = [];
+  for (let i = 0; i < lines.length; i++){
+    const L = lines[i];
+    const k = L.trim() ? lineKind(L) : 'blank';
+    const nx = lines[i+1];
+    const nk = (nx && nx.trim()) ? lineKind(nx) : 'blank';
+    const sm = stripMark(L);
+    const isChord = k === 'chord' || k === 'section' ||
+      (BAR_RE.test(sm.body) && ['chord','section'].includes(lineKind(spaceBars(sm.body))));
+    // 歌詞が下に付いている行は、折り返すと位置関係が崩れるので触らない
+    if (!isChord || nk === 'lyric'){ out.push(L); continue; }
+    if (!BAR_RE.test(sm.body)){ out.push(L); continue; }
+    const parts = splitBars(sm.body, BARS_PER_LINE);
+    if (parts.length <= 1){ out.push(L); continue; }
+    parts.forEach(x=>out.push(sm.mark + x));
+  }
+  return out.join('\n');
+}
+
 // ボタンから呼ぶ。直す前と比べて、変わった行数を知らせる
 function tidySheet(kind){
   const ta = curEditText(); if (!ta) return;
@@ -1422,6 +1477,8 @@ function tidySheet(kind){
     : kind === 'loosen' ? loosenGaps(before)
     : kind === 'slash'  ? slashStyle(before, 'slash')
     : kind === 'on'     ? slashStyle(before, 'on')
+    : kind === 'bars'   ? barsToFull(before)
+    : kind === 'wrap'   ? wrapBars(before)
     : before;
   if (after === before){ alertShare('直すところはありませんでした'); return; }
   const a = before.split('\n'), b = after.split('\n');
@@ -1557,6 +1614,9 @@ function chordBarHtml(){
       <span class="tabdiv"></span>
       <button class="pk sub" onclick="tidySheet('slash')">分数を C/G に</button>
       <button class="pk sub" onclick="tidySheet('on')">分数を ConG に</button>
+      <span class="tabdiv"></span>
+      <button class="pk sub" onclick="tidySheet('bars')">半角 / を小節線に</button>
+      <button class="pk sub" onclick="tidySheet('wrap')">小節線4つで折り返す</button>
     </div>
   </div>`;
 }
@@ -1701,6 +1761,13 @@ const HELP = {
       <b>半角の / は分数コードなので触りません。</b></p>
     <p><b>分数コードを ／ に / on に</b>…<code>ConG</code> と <code>C/G</code> を行き来します。
       <b>桁は動かしません</b>。字数が変わったぶんは空白で埋めるので、歌詞との位置関係はそのままです。</p>
+    <p><b>半角 / を小節線に</b>…前後が空いている半角の <code>/</code> を、全角の <code>／</code> に直します。
+      <code>C / G</code> の <code>/</code> は小節線とみなして直し、
+      <code>C/G</code> の <code>/</code> は分数コードなので触りません。
+      小節線の前後の空白はそのまま残します（詰めるとコードにくっついて読みにくいため）。</p>
+    <p><b>小節線4つで折り返す</b>…小節線 ${4} つごとに行を分けます。
+      イントロ・間奏・アウトロのように、<b>歌詞が下に付かない行だけ</b>が対象です。
+      歌詞のある行は、折り返すとコードの位置関係が崩れるので触りません。</p>
     <p>小節の区切りに使う<b>全角の ／ は分数コードとして読みません</b>。
       分数コードは<b>半角の /</b> で書いてください。</p>`],
   chordbar: ['コードを入れる', `
@@ -2677,7 +2744,7 @@ const FB_CONFIG = {
 };
 
 // このファイルの版。差し替えたかどうかの目印になる
-const APP_BUILD = 'V261115-09c';
+const APP_BUILD = 'V261115-09d';
 
 let fb = null, fbUser = null, fbUnsub = null, syncState = 'off', pushTimer = null;
 let syncPaused = false;   // まとめ消しの最中だけ true。消しかけの状態が戻ってくるのを防ぐ
