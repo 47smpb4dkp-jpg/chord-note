@@ -2744,7 +2744,7 @@ const FB_CONFIG = {
 };
 
 // このファイルの版。差し替えたかどうかの目印になる
-const APP_BUILD = 'V261115-09d';
+const APP_BUILD = 'V261122-07';
 
 let fb = null, fbUser = null, fbUnsub = null, syncState = 'off', pushTimer = null;
 let syncPaused = false;   // まとめ消しの最中だけ true。消しかけの状態が戻ってくるのを防ぐ
@@ -2883,6 +2883,7 @@ function startSync(){
       pushAll();                                   // 初回: 手元の曲を上げる
     } else {
       songs = next;
+      applyPlays();      // 開いた回数は端末の置き場から書き戻す（入れ替わりで消さない）
       // 送れた曲だけ「送信済み」に数える（詰まっている曲は送り直しの対象に残す）
       const mark = new Map();
       snap.docs.forEach(d=>{
@@ -3804,6 +3805,78 @@ function migrateSongs(){
   return changed;
 }
 
+/* ---- 開いた回数（この端末だけの記録） ----
+   回数はクラウドに上げない項目なので、曲の一覧とは別の置き場（cn_plays）に、
+   曲ID ごとに持つ。同期がつながり直して曲の一覧がクラウドの内容で入れ替わっても、
+   ここから書き戻すので回数が消えない。
+   書くときは必ず「今ある内容を読んでから1曲ぶんだけ足して書く」。
+   古い一覧をまるごと書き戻して、ほかの曲の回数を消してしまうことを防ぐ。 */
+const PLAYS_KEY = 'cn_plays';
+function loadPlays(){
+  try{ const o = JSON.parse(localStorage.getItem(PLAYS_KEY) || '{}');
+       return (o && typeof o === 'object' && !Array.isArray(o)) ? o : {}; }
+  catch(e){ return {}; }
+}
+function savePlays(o){ try{ localStorage.setItem(PLAYS_KEY, JSON.stringify(o)); }catch(e){} }
+// 1曲ぶんだけ足して書く
+function savePlay(id, n, t){
+  if (isViewer || !id) return;
+  const o = loadPlays();
+  const cur = o[id] || [0, 0];
+  o[id] = [Math.max(n || 0, cur[0] || 0), Math.max(t || 0, cur[1] || 0)];
+  savePlays(o);
+}
+// 置き場の回数を曲に書き戻す。同期で一覧が入れ替わったあとに必ず通す
+function applyPlays(){
+  if (isViewer) return;
+  const o = loadPlays();
+  songs.forEach(x=>{
+    const v = o[x.id];
+    if (!v) return;
+    if ((v[0] || 0) > (x.plays || 0))    x.plays    = v[0];
+    if ((v[1] || 0) > (x.lastOpen || 0)) x.lastOpen = v[1];
+  });
+}
+// 以前のつくりでは回数が曲のなかにだけ入っていた。初回に置き場へ移す
+function seedPlays(){
+  if (isViewer) return;
+  const o = loadPlays();
+  let changed = false;
+  songs.forEach(x=>{
+    if (!x.plays && !x.lastOpen) return;
+    const cur = o[x.id] || [0, 0];
+    const n = Math.max(x.plays || 0, cur[0] || 0);
+    const t = Math.max(x.lastOpen || 0, cur[1] || 0);
+    if (n !== cur[0] || t !== cur[1]){ o[x.id] = [n, t]; changed = true; }
+  });
+  if (changed) savePlays(o);
+}
+// 消した曲の記録を置き場から外す
+function forgetPlays(ids){
+  if (isViewer) return;
+  const o = loadPlays();
+  let changed = false;
+  ids.forEach(id=>{ if (o[id]){ delete o[id]; changed = true; } });
+  if (changed) savePlays(o);
+}
+// 開き直したときに、置き場の回数を曲へ戻す（この行は PLAYS_KEY の宣言より後ろに置く）
+seedPlays();
+applyPlays();
+
+// 回数を1つ足す。数えるところはここ1か所にまとめる
+function bumpPlays(s){
+  if (!s) return;
+  s.plays = (s.plays || 0) + 1;
+  s.lastOpen = Date.now();
+  savePlay(s.id, s.plays, s.lastOpen);
+  persistCount();
+}
+// 同じ曲の別バージョンぶんも合わせた回数。「よく使う」はこれで並べる
+function playsOf(s){
+  const vs = versionsOf(s);
+  return vs.length > 1 ? vs.reduce((a,x)=>a + (x.plays || 0), 0) : (s.plays || 0);
+}
+
 function persist(){
   if (isViewer) return;              // 閲覧中は相手の端末に何も残さない
   try{ localStorage.setItem('cn_songs', JSON.stringify(songs)); }catch(e){}
@@ -4058,7 +4131,7 @@ function openSongView(id, from){
   alignNav(id);
   openSong=id; editing=null;
   const x = songs.find(s=>s.id===id);
-  if (x){ x.plays = (x.plays||0)+1; x.lastOpen = Date.now(); persistCount(); }
+  if (x) bumpPlays(x);
   render(); document.getElementById('main').scrollTop=0;
 }
 
@@ -4090,7 +4163,7 @@ function songStep(d){
   stopScroll(); stopSongRec(); stopMetro();
   openSong = navIds[j];
   const x = songs.find(s=>s.id===openSong);
-  if (x){ x.plays = (x.plays||0)+1; x.lastOpen = Date.now(); persistCount(); }
+  if (x) bumpPlays(x);
   render();
   document.getElementById('main').scrollTop = 0;
 }
@@ -4332,9 +4405,7 @@ function switchVersion(id){
   const cur = navIds.indexOf(openSong);
   if (cur >= 0) navIds[cur] = id; else alignNav(id);
   openSong = id;
-  s.lastOpen = Date.now();
-  s.plays = (s.plays||0) + 1;
-  persistCount();
+  bumpPlays(s);
   render();
   document.getElementById('main').scrollTop = 0;
 }
@@ -4529,7 +4600,8 @@ function renderInner(){
     const keyOf = x => groupMode==='artist' ? (x.artist||'不明') : (x.folder||'未分類');
     const groupNames = [...new Set(reps.map(keyOf))];
     const favs = reps.filter(x=>x.fav);
-    const often = reps.filter(x=>x.plays>0).sort((a,b)=>b.plays-a.plays).slice(0,12);
+    // 同じ曲の別バージョンぶんも合わせて数える
+    const often = reps.filter(x=>playsOf(x)>0).sort((a,b)=>playsOf(b)-playsOf(a)).slice(0,12);
 
     const d = document.createElement('div');
     const syncHtml = isViewer
@@ -4569,7 +4641,7 @@ function renderInner(){
         <button class="nm" onclick="${selectMode?`toggleSel('${x.id}')`:`openSongView('${x.id}','list')`}">${esc(x.title)}${
           (()=>{const n=versionsOf(x).length; return n>1?`<i class="verbadge">${n}バージョン</i>`:'';})()}
           <div class="ar">${[esc(x.artist||''), versionsOf(x).length>1?esc(vLabel(x)):'',
-            x.plays?x.plays+'回':'', x.hasAudio?'♪音源あり':''].filter(Boolean).join(' · ')}</div></button>
+            playsOf(x)?playsOf(x)+'回':'', x.hasAudio?'♪音源あり':''].filter(Boolean).join(' · ')}</div></button>
         <span class="kv">${esc(x.key||'?')}${x.capo?' / Capo'+x.capo:''}</span>
         ${isViewer||selectMode?'':`<button class="swmore" onclick="swipeMore(this)" aria-label="操作">⋯</button>`}</div>`;
       if (isViewer || selectMode) return inner;
@@ -5572,6 +5644,7 @@ async function doDelete(){
   if (!pendingDelete || isViewer) return;
   const ids = new Set(pendingDelete.ids);
   songs = songs.filter(x=>!ids.has(x.id));
+  forgetPlays([...ids]);
   playlists.forEach(pl=>{ pl.songs = pl.songs.filter(id=>!ids.has(id)); });
   persistMeta();
   ids.forEach(id=>delAudio(id));
@@ -5825,7 +5898,8 @@ async function doResetAll(){
     navIds = []; listOrder = []; plOrder = [];
     pushed = new Map();                 // 二重に消しにいかないようにする
     ids.forEach(id=>delAudio(id));
-    try{ localStorage.removeItem('cn_songs'); localStorage.removeItem('cn_playlist'); }catch(e){}
+    try{ localStorage.removeItem('cn_songs'); localStorage.removeItem('cn_playlist');
+          localStorage.removeItem(PLAYS_KEY); }catch(e){}
     persistMeta();
 
     if (fb && fbUser && ids.length){

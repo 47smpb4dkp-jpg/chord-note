@@ -241,6 +241,41 @@ function check(group, name, pass, detail){
   check('K','移調しても譜面の文字は変わらない', k.移調しても本文不変);
   check('K','移調ぶんは表示のずれとして持つ', k.ずれ===2, 'shift='+k.ずれ);
 
+  console.log('\n【L】開いた回数（よく使う）は端末だけに持ち、同期で消えない');
+  const l = await p.evaluate(()=>{
+    const mk=(id,ex)=>Object.assign({id,title:id,text:'C G\nあ',bpm:100,key:'C',capo:0,
+      folder:'A',transpose:0,v:2,sv:2}, ex||{});
+    const out={};
+    savePlays({});
+    songs=[mk('a'),mk('b')]; pushed=new Map(); playlists=[];
+    bumpPlays(songs[0]); bumpPlays(songs[0]); bumpPlays(songs[1]);
+    out.置き場に入る = JSON.stringify(Object.keys(loadPlays()).sort())==='["a","b"]';
+    out.クラウドに出さない = !/plays|lastOpen/.test(JSON.stringify(forCloud(songs[0])));
+    // クラウドの中身（回数なし）で一覧が入れ替わった状態を作る
+    songs=[mk('a'),mk('b')];
+    applyPlays();
+    out.入れ替わっても戻る = songs[0].plays===2 && songs[1].plays===1;
+    // 1曲ぶんだけ足す。ほかの曲の記録を消さない
+    savePlays({a:[2,1],b:[1,1],z:[9,1]});
+    savePlay('a',3,2);
+    const o=loadPlays();
+    out.ほかの曲を消さない = o.b && o.b[0]===1 && o.z && o.z[0]===9 && o.a[0]===3;
+    // 別バージョンぶんを合わせて数える
+    songs=[mk('v1',{vgroup:'g',plays:3}), mk('v2',{vgroup:'g',plays:4})];
+    out.版をまとめて数える = playsOf(songs[0])===7 && playsOf(songs[1])===7;
+    // 消した曲の記録は外れる
+    savePlays({a:[1,1],b:[2,2]}); forgetPlays(['a']);
+    out.消した曲は外れる = JSON.stringify(Object.keys(loadPlays()))==='["b"]';
+    savePlays({});
+    return out;
+  });
+  check('L','回数は端末の置き場に入る', l.置き場に入る);
+  check('L','回数はクラウドに送らない', l.クラウドに出さない);
+  check('L','同期で一覧が入れ替わっても回数が戻る', l.入れ替わっても戻る);
+  check('L','1曲足してもほかの曲の記録を消さない', l.ほかの曲を消さない);
+  check('L','別バージョンぶんを合わせて数える', l.版をまとめて数える);
+  check('L','消した曲の記録は置き場から外れる', l.消した曲は外れる);
+
   console.log('\n' + '='.repeat(60));
   console.log(`結果: OK ${ok} 件 / NG ${ng} 件`);
   if (fails.length){ console.log('\n■ 干渉しているもの:'); fails.forEach(f=>console.log('  - '+f)); }
