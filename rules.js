@@ -276,6 +276,39 @@ function check(group, name, pass, detail){
   check('L','別バージョンぶんを合わせて数える', l.版をまとめて数える);
   check('L','消した曲の記録は置き場から外れる', l.消した曲は外れる);
 
+  console.log('\n【M】自動スクロール中に画面を触っても止まらない（止めるのは停止ボタンだけ）');
+  await p.evaluate(()=>{
+    let t=''; for(let i=0;i<120;i++) t+='C       G\nあさのひかりのなかで'+i+'\n';
+    const s=parseSheet(t);
+    Object.assign(s,{id:'a',title:'x',text:t,bpm:100,key:'C',capo:0,folder:'A',transpose:0,v:2,sv:2,scrollPct:100});
+    songs=[s]; openSongView('a','list'); document.getElementById('main').scrollTop=0;
+  });
+  await p.waitForTimeout(300);
+  const fire = (type)=>p.evaluate((ty)=>{
+    const m=document.getElementById('main');
+    const tc=new Touch({identifier:1,target:m,clientX:200,clientY:300});
+    m.dispatchEvent(new TouchEvent(ty,{bubbles:true,touches:ty==='touchstart'?[tc]:[],changedTouches:[tc]}));
+  }, type);
+  const top = ()=>p.evaluate(()=>document.getElementById('main').scrollTop);
+  await p.evaluate(()=>startScroll());
+  await p.waitForTimeout(600);
+  await fire('touchstart');
+  const m1 = await p.evaluate(()=>({scrolling, hold:scrollHold}));
+  const y1 = await top(); await p.waitForTimeout(500); const y2 = await top();
+  // 指で動かしたぶんはそのまま残す
+  await p.evaluate(()=>{ document.getElementById('main').scrollTop += 300; });
+  const y3 = await top();
+  await fire('touchend');
+  await p.waitForTimeout(900);
+  const y4 = await top();
+  const m2 = await p.evaluate(()=>({scrolling, hold:scrollHold}));
+  await p.evaluate(()=>stopScroll());
+  const m3 = await p.evaluate(()=>({scrolling, hold:scrollHold}));
+  check('M','触れても自動スクロールは止まらない', m1.scrolling && m1.hold);
+  check('M','指が触れている間は送らない', y2===y1, `${y1}→${y2}`);
+  check('M','離すと、指で動かした位置から続きを送る', m2.scrolling && !m2.hold && y4>y3, `${y3}→${y4}`);
+  check('M','停止ボタンでは止まる', !m3.scrolling && !m3.hold);
+
   console.log('\n' + '='.repeat(60));
   console.log(`結果: OK ${ok} 件 / NG ${ng} 件`);
   if (fails.length){ console.log('\n■ 干渉しているもの:'); fails.forEach(f=>console.log('  - '+f)); }

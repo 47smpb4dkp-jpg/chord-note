@@ -99,7 +99,7 @@ grep -n "^/\* =\+ \|^/\* ---- " index.html
 本物の `index.html` をブラウザで開いて関数を直接呼ぶ形。モックはしていない。
 
 ```bash
-node rules.js          # 機能どうしの干渉チェック（A〜L・53項目）3秒
+node rules.js          # 機能どうしの干渉チェック（A〜M・57項目）3秒
 node t〇〇.js           # 個別の機能
 ```
 

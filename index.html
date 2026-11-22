@@ -2744,7 +2744,7 @@ const FB_CONFIG = {
 };
 
 // このファイルの版。差し替えたかどうかの目印になる
-const APP_BUILD = 'V261122-07';
+const APP_BUILD = 'V261122-16';
 
 let fb = null, fbUser = null, fbUnsub = null, syncState = 'off', pushTimer = null;
 let syncPaused = false;   // まとめ消しの最中だけ true。消しかけの状態が戻ってくるのを防ぐ
@@ -3721,6 +3721,7 @@ let openSong = null;
 let navIds = [], navName = '';
 let listOrder = [], plOrder = [];
 let scrolling = false, scrollTimer = null;
+let scrollHold = false, scrollHoldTimer = null, scrollTouching = false;   // 自動スクロール中に指で触れたときの一時停止
 let draft = {text:'', title:'', artist:'', key:'', capo:0, folder:'',
              capoBase:'play', transpose:0, keyEdited:false, keyGuessed:false};
 let pickRoot = 'C', pickQual = '';
@@ -5133,8 +5134,11 @@ function startScroll(){
   const main = document.getElementById('main');
   const pxPerSec = scrollPxPerSec(s);
   let last = performance.now(), acc = 0;
+  scrollHold = false;
   const step = (t)=>{
     if (!scrolling) return;
+    // 指で触っている間（と、離したあと画面が流れている間）は送らずに待つ
+    if (scrollHold){ last = t; acc = 0; scrollTimer = requestAnimationFrame(step); return; }
     acc += (t-last)/1000 * pxPerSec; last = t;
     if (acc >= 1){ main.scrollTop += Math.floor(acc); acc -= Math.floor(acc); }
     if (main.scrollTop + main.clientHeight >= main.scrollHeight - 1){ stopScroll(); return; }
@@ -5145,10 +5149,36 @@ function startScroll(){
 }
 function stopScroll(){
   scrolling = false;
+  scrollHold = false;
+  if (scrollHoldTimer){ clearTimeout(scrollHoldTimer); scrollHoldTimer = null; }
   if (scrollTimer) cancelAnimationFrame(scrollTimer);
   const b = document.getElementById('scrollBtn'); if (b) b.textContent='自動スクロール';
 }
-document.getElementById('main').addEventListener('touchstart', ()=>{ if(scrolling) stopScroll(); }, {passive:true});
+// 自動スクロール中に画面を触っても止めない。止めるのは「停止」ボタンだけにする。
+// 指が触れている間は一時停止し、離して画面の流れが落ち着いたら、その位置から続きを送る。
+// （送りを続けたまま指で動かすと、指の動きとぶつかって画面がガタつくため）
+const SCROLL_RESUME_MS = 250;   // 最後に画面が動いてから再開するまでの待ち
+function holdScroll(){
+  if (!scrolling) return;
+  scrollHold = true;
+  if (scrollHoldTimer){ clearTimeout(scrollHoldTimer); scrollHoldTimer = null; }
+}
+function releaseScrollSoon(){
+  if (!scrolling || scrollTouching) return;
+  if (scrollHoldTimer) clearTimeout(scrollHoldTimer);
+  scrollHoldTimer = setTimeout(()=>{ scrollHoldTimer = null; if (!scrollTouching) scrollHold = false; }, SCROLL_RESUME_MS);
+}
+(()=>{
+  const main = document.getElementById('main');
+  main.addEventListener('touchstart', ()=>{ scrollTouching = true; holdScroll(); }, {passive:true});
+  const up = ()=>{ scrollTouching = false; releaseScrollSoon(); };
+  main.addEventListener('touchend', up, {passive:true});
+  main.addEventListener('touchcancel', up, {passive:true});
+  // 指を離したあとも慣性で流れている間は待ち、止まってから再開する
+  main.addEventListener('scroll', ()=>{ if (scrollHold && !scrollTouching) releaseScrollSoon(); }, {passive:true});
+  // パソコンのマウスホイールでも同じく一時停止→再開
+  main.addEventListener('wheel', ()=>{ holdScroll(); releaseScrollSoon(); }, {passive:true});
+})();
 
 // パソコンでは ← → キーでも前後の曲へ移動できる
 document.addEventListener('keydown', e=>{
