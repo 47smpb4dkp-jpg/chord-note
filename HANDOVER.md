@@ -105,7 +105,7 @@ clone してくれば、どのチャットからでもそのまま流せる。�
 ブラウザで開いて関数を直接呼ぶ形。モックはしていない。
 
 ```bash
-node tests/rules.js            # 機能どうしの干渉チェック（A〜N・63項目）5秒
+node tests/rules.js            # 機能どうしの干渉チェック（A〜O・71項目）5秒
 ./tests/run-all.sh             # 全部（3〜5分）
 ./tests/run-all.sh tcapo tkey  # 名前で絞る
 ```

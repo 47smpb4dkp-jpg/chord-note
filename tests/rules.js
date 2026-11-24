@@ -346,6 +346,47 @@ function check(group, name, pass, detail){
   check('N','コードのうしろに余白がある（歌詞が短くてもくっつかない）',
         gap.n >= 2 && gap.pad > 4, `段 ${gap.n} / 余白 ${gap.pad}px`);
 
+  console.log('\n【O】「歌詞のみ」は見え方だけ。本文・同期・送りの速さを変えない（2026-11-24 追加）');
+  await p.evaluate(()=>{
+    let t='Aメロ\nC       G       Am      F\nあさのひかりのなかで\nC       G\n\n';
+    for(let i=0;i<60;i++) t+='F       G       C\nきみがわらう'+i+'\n';
+    const s=parseSheet(t);
+    Object.assign(s,{id:'a',title:'x',text:t,bpm:100,key:'C',capo:0,folder:'A',transpose:0,v:2,sv:2,scrollPct:60});
+    songs=[s]; editing=null; if (lyricsOnly) toggleLyricsOnly(); openSongView('a','list');
+    document.getElementById('main').scrollTop=0;
+  });
+  await p.waitForTimeout(300);
+  const look = ()=>p.evaluate(()=>{
+    const sh=document.getElementById('sheet');
+    const txt=sh.innerText;
+    // 歌詞はコードの位置で細切れになっているので、かたまりごとにつなげて数える
+    const lyrText=[...sh.querySelectorAll('.blk')].map(bk=>
+      [...bk.querySelectorAll('.sl, .lrow:not(.lsec)')].map(e=>e.textContent).join('').replace(/\s+/g,'')).join('\n');
+    return {sc:sh.querySelectorAll('.seg .sc').length, txt,
+      lyr:(lyrText.match(/きみがわらう\d+/g)||[]).length, first:/あさのひかりのなかで/.test(lyrText),
+      sec:/Aメロ/.test(txt), chordName:/\bAm\b/.test(txt),
+      perRow: scrollPxPerSec(songs[0]) / sheetRowH(), btn:document.getElementById('lyrBtn').classList.contains('on')};
+  });
+  const o0 = await look();
+  const before = await p.evaluate(()=>songs[0].text);
+  await p.evaluate(()=>{ startScroll(); toggleLyricsOnly(); });
+  await p.waitForTimeout(200);
+  const o1 = await look();
+  const o1x = await p.evaluate(()=>({scrolling, stored:localStorage.getItem('cn_lyricsOnly'),
+    cloud:/lyricsOnly/.test(JSON.stringify(forCloud(songs[0]))), text:songs[0].text}));
+  await p.evaluate(()=>{ toggleLyricsOnly(); stopScroll(); });
+  await p.waitForTimeout(200);
+  const o2 = await look();
+  const o2x = await p.evaluate(()=>({stored:localStorage.getItem('cn_lyricsOnly'), text:songs[0].text}));
+  check('O','押すとコード行が消える', o0.sc>0 && o1.sc===0 && !o1.chordName && o1.btn, `${o0.sc}→${o1.sc}`);
+  check('O','歌詞は1行も欠けない', o1.first && o1.lyr===60 && o0.lyr===60, `${o0.lyr}→${o1.lyr}`);
+  check('O','区切りの見出し（Aメロなど）は残る', o0.sec && o1.sec);
+  check('O','もう一度押すと元どおりに出る', o2.sc===o0.sc && !o2.btn && o2.txt===o0.txt);
+  check('O','譜面の本文（text）は書き換えない', o1x.text===before && o2x.text===before);
+  check('O','端末の設定に持ち、曲のデータ（クラウド）には入れない', o1x.stored==='1' && o2x.stored===null && !o1x.cloud);
+  check('O','切り替えても自動スクロールは止まらない', o1x.scrolling);
+  check('O','送りの速さは「1行あたりの秒数」のまま', Math.abs(o1.perRow-o0.perRow)<1e-9 && Math.abs(o2.perRow-o0.perRow)<1e-9);
+
   console.log('\n' + '='.repeat(60));
   console.log(`結果: OK ${ok} 件 / NG ${ng} 件`);
   if (fails.length){ console.log('\n■ 干渉しているもの:'); fails.forEach(f=>console.log('  - '+f)); }

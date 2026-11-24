@@ -158,6 +158,10 @@ button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
 .lrow{line-height:1.5;white-space:pre-wrap;overflow-wrap:break-word;
   word-break:normal;line-break:strict}
 .lrow.extra{opacity:.92}
+/* 歌詞のみ表示で残す区切りの見出し（Aメロ・サビ・×2 など） */
+.lrow.lsec{color:var(--teal);font-weight:700;font-size:.85em}
+/* 「歌詞のみ」が効いている間は、押されているとわかる色にする */
+#lyrBtn.on{background:var(--accent-soft);border-color:var(--accent);color:var(--accent);font-weight:700}
 
 /* ダイアグラム */
 .dgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(104px,1fr));gap:12px}
@@ -2744,7 +2748,7 @@ const FB_CONFIG = {
 };
 
 // このファイルの版。差し替えたかどうかの目印になる
-const APP_BUILD = 'V261122-16';
+const APP_BUILD = 'V261124-22';
 
 let fb = null, fbUser = null, fbUnsub = null, syncState = 'off', pushTimer = null;
 let syncPaused = false;   // まとめ消しの最中だけ true。消しかけの状態が戻ってくるのを防ぐ
@@ -3936,6 +3940,20 @@ function makeSegments(chords, lyricText){
 /* ---- 譜面の見た目（文字サイズ・ぞろえ）。曲ごとに持ち、無ければ端末の設定を使う ---- */
 function devGet(k){ try{ return localStorage.getItem(k); }catch(e){ return null; } }
 function devSet(k, v){ try{ v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); }catch(e){} }
+// 「歌詞のみ」表示。見え方だけを変え、曲の本文（text）には一切触らない。
+// 端末ごとの設定として持つ（曲のデータに入れるとクラウド同期に乗ってしまうため）
+let lyricsOnly = devGet('cn_lyricsOnly') === '1';
+function toggleLyricsOnly(){
+  const main = document.getElementById('main');
+  const ratio = main && main.scrollHeight ? main.scrollTop / main.scrollHeight : 0;
+  lyricsOnly = !lyricsOnly;
+  devSet('cn_lyricsOnly', lyricsOnly ? '1' : null);
+  render();
+  // 譜面の長さが変わるので、だいたい同じ場所を見たままにする
+  if (main) main.scrollTop = Math.round(ratio * main.scrollHeight);
+  // 1行の高さが変わるので、送りの速さ（1行あたりの秒数）を測り直す
+  if (scrolling){ stopScroll(); startScroll(); }
+}
 const SHEET_SIZE_DEF = 16;
 // 文字サイズ。曲の設定 → 端末の設定 → はじめの大きさ の順で決める
 function sheetSizeOf(s){
@@ -4017,6 +4035,27 @@ function renderSheet(song, opts){
       }
     }
 
+    if (b.chords.length && opts.lyricsOnly){
+      // 歌詞のみ：コード行は出さない。「Aメロ」「×2」などの区切りの見出しだけ残す
+      const secs = b.chords.filter(c=>c.kind === 's').map(c=>c.text);
+      if (secs.length){
+        const sr = document.createElement('div');
+        sr.className = 'lrow lsec';
+        sr.textContent = secs.join(' ');
+        blk.appendChild(sr);
+      }
+      for (let i = 0; i < b.lyrics.length; i++){
+        const t = b.lyrics[i].text;
+        if (!(t || '').trim()) continue;
+        const lr = document.createElement('div');
+        lr.className = 'lrow' + (i ? ' extra' : '');
+        lr.textContent = t;
+        blk.appendChild(lr);
+      }
+      // 前奏・間奏などコードだけの行は、かたまりごと出さない
+      if (blk.childNodes.length) el.appendChild(blk);
+      continue;
+    }
     if (b.chords.length){
       const row = document.createElement('div');
       row.className = 'pairrow';
@@ -4508,6 +4547,8 @@ function renderInner(){
           aria-label="速さを変える"><b>${scrollPctOf(s)}</b>% / <b>${s.bpm}</b> BPM</button>
         <button class="act" id="scrollBtn" onclick="toggleScroll()">${scrolling?'停止':'自動スクロール'}</button>
         <button class="ghost${metroOn?' on':''}" id="metroBtn" onclick="toggleMetro()">♩ ${metroOn?'停止':'メトロノーム'}</button>
+        <button class="ghost${lyricsOnly?' on':''}" id="lyrBtn" onclick="toggleLyricsOnly()"
+          aria-pressed="${lyricsOnly}" title="コード行の表示・非表示">歌詞のみ</button>
         <button class="ghost" onclick="openSongMenu()" aria-label="この曲のメニュー">⋯ メニュー</button>
       </div>
       ${vers.length > 1 ? `<div class="vrow">
@@ -4564,12 +4605,13 @@ function renderInner(){
     loadAudioSlot(s);
     }
 
-    view.appendChild(renderSheet(s));
+    view.appendChild(renderSheet(s, {lyricsOnly}));
     applySheetLook();
     const tip = document.createElement('p');
     tip.className = 'hint';
     tip.style.marginTop = '18px';
-    tip.textContent = 'コード名をタップすると押さえ方が出ます。';
+    tip.textContent = lyricsOnly ? '歌詞のみ表示中です。「歌詞のみ」をもう一度押すとコードが出ます。'
+                                 : 'コード名をタップすると押さえ方が出ます。';
     view.appendChild(tip);
     return;
   }
