@@ -309,6 +309,43 @@ function check(group, name, pass, detail){
   check('M','離すと、指で動かした位置から続きを送る', m2.scrolling && !m2.hold && y4>y3, `${y3}→${y4}`);
   check('M','停止ボタンでは止まる', !m3.scrolling && !m3.hold);
 
+  console.log('\n【N】小節線の整理と、コードのうしろの余白（2026-11-24 追加）');
+  const nn = await p.evaluate(()=>{
+    const o={};
+    // 半角 / を小節線に。離れている / だけを全角にし、分数コードには触らない
+    o.半角を小節線に = barsToFull('C / G / Am / F\n') === 'C ／ G ／ Am ／ F\n';
+    o.分数は触らない = barsToFull('C/G / D/A\n') === 'C/G ／ D/A\n';
+    // 小節線4つごとに改行する
+    const w = wrapBars('C／ G／ Am／ F／ D／ A／ Bm／ G／ C／ F／\n').trim().split('\n');
+    o.小節4つで折り返す = w.length === 3 && w[0] === 'C／ G／ Am／ F／';
+    o.折り返しの単位は4 = w[1] === 'D／ A／ Bm／ G／';
+    // 歌詞が下に付いている行は、位置関係が崩れるので折り返さない
+    const keep = 'C／ G／ Am／ F／ D／ A／\nあさのひかり\n';
+    o.歌詞つきは折り返さない = wrapBars(keep) === keep;
+    return o;
+  });
+  check('N','離れた半角 / を小節線（全角）に直す', nn.半角を小節線に);
+  check('N','分数コードの / は小節線にしない', nn.分数は触らない);
+  check('N','小節線4つごとに改行する', nn.小節4つで折り返す);
+  check('N','折り返しの単位は4小節', nn.折り返しの単位は4);
+  check('N','歌詞が下にある行は折り返さない', nn.歌詞つきは折り返さない);
+
+  // 歌詞が短くてもコードどうしがくっつかない（コードのうしろに全角1つぶんの余白）
+  const gap = await p.evaluate(()=>{
+    const t = 'C   G   Am  F\nあ\n';
+    const s2 = parseSheet(t);
+    Object.assign(s2,{id:'g',title:'g',text:t,bpm:100,key:'C',capo:0,folder:'A',transpose:0,v:2,sv:2});
+    songs=[s2]; openSongView('g','list');
+    const sc = [...document.querySelectorAll('#sheet .seg .sc')];
+    if (sc.length < 2) return {n:sc.length};
+    const pad = parseFloat(getComputedStyle(sc[0]).paddingRight) || 0;
+    // 隣り合うコードの字のあいだに、すきまがあること
+    const a1 = sc[0].getBoundingClientRect(), a2 = sc[1].getBoundingClientRect();
+    return {n:sc.length, pad, すきま: Math.round(a2.left - a1.right + pad)};
+  });
+  check('N','コードのうしろに余白がある（歌詞が短くてもくっつかない）',
+        gap.n >= 2 && gap.pad > 4, `段 ${gap.n} / 余白 ${gap.pad}px`);
+
   console.log('\n' + '='.repeat(60));
   console.log(`結果: OK ${ok} 件 / NG ${ng} 件`);
   if (fails.length){ console.log('\n■ 干渉しているもの:'); fails.forEach(f=>console.log('  - '+f)); }

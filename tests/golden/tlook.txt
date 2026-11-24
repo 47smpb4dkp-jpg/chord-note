@@ -1,0 +1,8 @@
+はじめ   {"size":"16px","ctr":false,"align":"左ぞろえ","sizeBtn":"ふつう"}
+ぞろえ後 {"size":"16px","ctr":true,"align":"中央ぞろえ","sizeBtn":"ふつう"}
+メニュー出た? true
+＋4回後  {"size":"20px","ctr":true,"align":"中央ぞろえ","sizeBtn":"20"}
+別の曲   {"size":"20px","ctr":true,"align":"中央ぞろえ","sizeBtn":"20"}
+自動後   {"size":"16px","ctr":true,"align":"中央ぞろえ","sizeBtn":"ふつう"}
+保存: {"a":{"sz":20,"al":"center"},"b":{"sz":null},"dev":{"sz":null,"al":"center"}}
+errs []

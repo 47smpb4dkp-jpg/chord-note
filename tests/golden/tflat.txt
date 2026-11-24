@@ -1,0 +1,13 @@
+B♭m7 を +1 → Bm7
+B♭m7 を +2 → Cm7
+E♭ を +1 → E
+A♭add9 を +2 → B♭add9
+C を +1 → C#
+F#m7 を +1 → Gm7
+Bb を +1 → B
+G を +3 → A#
+B♭onD を +1 → BonD#
+D7onC／ を +1 → D#7onC#／
+D// を +3 → F//
+
+キー: B♭ -3 → G / E♭m +2 → Fm / G +3 → A# / C +1 → C# / A♭ -1 → G

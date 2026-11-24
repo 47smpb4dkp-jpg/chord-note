@@ -1,0 +1,12 @@
+--- Vision の結果 ---
+C      G       Am      F
+あさの ひかりの
+F      G       C
+きみが わらう
+--- 行の判定 ---
+chord | C      G       Am      F
+lyric | あさの ひかりの
+chord | F      G       C
+lyric | きみが わらう
+鍵エラー: 鍵が違うようです
+errs []

@@ -1,0 +1,5 @@
+saved: {"t":"テスト改","f":"ロック","txt":"Dm/     G7/     C       Am\nきみのこえ （間奏） Dm"}
+draft text after capo2: F  Gm  Am  Bb
+こいごころ
+new song: [{"t":"テスト改","f":"ロック","k":"Dm","c":0,"txt":"Dm/     G7/     C       Am | きみのこえ （間奏） Dm"},{"t":"新曲","f":"ニュー","k":"G","c":2,"txt":"F  Gm  Am  Bb | こいごころ （ここから2回し）"}]
+errs []
