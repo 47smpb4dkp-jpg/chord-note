@@ -18,7 +18,7 @@ function check(group, name, pass, detail){
   const b=await chromium.launch();
   const p=await b.newPage({viewport:{width:1280,height:1000}});
   const errs=[]; p.on('pageerror',e=>errs.push(e.message));
-  await p.goto('file://'+__dirname+'/build/index.html');
+  await p.goto('file://'+__dirname+'/../index.html');
   await p.waitForTimeout(900);
 
   // 1曲を編集中の状態にして、関数を直接呼べるようにする
